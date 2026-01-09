@@ -1,0 +1,27 @@
+{
+    "name": "Smruti Ranjan Swain",
+    "experience_level": "Intermediate",
+    "dietary_preferences": [],
+    "allergies": [
+        "Fish"
+    ],
+    "health_goals": [],
+    "explicit_preferences": {
+        "liked_cuisines": [],
+        "disliked_ingredients": []
+    },
+    "interactions": [
+        {
+            "timestamp": "2026-01-09T12:15:54.882548",
+            "action": "like",
+            "recipe_name": "Paal Payasam Recipe - Rice Kheer/Pudding",
+            "details": 
+        },
+        {
+            "timestamp": "2026-01-09T12:16:00.315576",
+            "action": "like",
+            "recipe_name": "Chicken Malai Kabab Recipe",
+            "details": {}
+        }
+    ]
+}
