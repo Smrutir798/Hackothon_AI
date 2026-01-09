@@ -1,7 +1,7 @@
 import React from 'react';
 import RecipeCard from './RecipeCard';
 
-const RecipeList = ({ recipes }) => {
+const RecipeList = ({ recipes, onInteraction }) => {
   if (!recipes || recipes.length === 0) {
     return (
       <div style={{ textAlign: 'center', marginTop: '3rem', color: 'var(--text-muted)' }}>
@@ -13,7 +13,7 @@ const RecipeList = ({ recipes }) => {
   return (
     <div className="grid">
       {recipes.map((recipe, index) => (
-        <RecipeCard key={index} recipe={recipe} />
+        <RecipeCard key={index} recipe={recipe} onInteraction={onInteraction} />
       ))}
     </div>
   );
