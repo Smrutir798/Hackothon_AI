@@ -85,7 +85,7 @@ const CookingMode = () => {
                 }
             };
         } else {
-             alert("Voice commands are not supported in this browser. Try Chrome or Edge.");
+             console.warn("Voice commands are not supported in this browser.");
         }
 
         return () => {
@@ -106,7 +106,6 @@ const CookingMode = () => {
             }, 1000);
         } else if (timer && timer.remaining === 0) {
             setIsTimerRunning(false);
-            // Alarm sound could go here
             speakText("Timer finished!");
             alert("Timer Done!");
         }
@@ -146,7 +145,6 @@ const CookingMode = () => {
     }, [currentStep, recipe]);
 
     const processVoiceCommand = (cmd) => {
-        // Use Refs to get latest state
         const currentR = recipeRef.current;
         const currentS = stepRef.current;
 
@@ -169,7 +167,6 @@ const CookingMode = () => {
              speakText(text);
         }
         else if (cmd.includes('timer') && cmd.includes('start')) {
-             // Logic repeated here or extracted? safely extract
              const stepText = currentR.instructions[currentS];
              const match = stepText.match(/(\d+)\s*min/i);
              if (match) {
@@ -187,6 +184,7 @@ const CookingMode = () => {
     };
 
     const toggleListening = () => {
+        if (!recognitionRef.current) return;
         if (isListening) {
             recognitionRef.current.stop();
             setIsListening(false);
@@ -199,6 +197,10 @@ const CookingMode = () => {
     const speakText = (text) => {
         window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
+        if (targetLang !== 'en') {
+             // Try to find voice for target language? For now default (en) is safer or specific locale
+             // utterance.lang = targetLang; 
+        }
         utterance.onend = () => setIsSpeaking(false);
         setIsSpeaking(true);
         window.speechSynthesis.speak(utterance);
@@ -211,7 +213,11 @@ const CookingMode = () => {
 
     const readStep = () => {
         if (!recipe || !recipe.instructions) return;
-        const text = recipe.instructions[currentStep];
+        const text = displayText; // Speak the translated text if available? Or always English?
+        // Let's speak the visible text logic
+        
+        // Actually, WebSpeech API language support varies. 
+        // Ideally we speak the english text if lang is english, or try to speak the translation.
         speakText(text);
     };
 
@@ -229,20 +235,6 @@ const CookingMode = () => {
         }
     };
 
-    const detectAndStartTimer = () => {
-         const stepText = recipe.instructions[currentStep];
-         // Regex for "X minutes"
-         const match = stepText.match(/(\d+)\s*min/i);
-         if (match) {
-             const mins = parseInt(match[1]);
-             setTimer({ remaining: mins * 60, original: mins * 60 });
-             setIsTimerRunning(true);
-             speakText(`Starting timer for ${mins} minutes.`);
-         } else {
-             speakText("No time detected in this step.");
-         }
-    };
-    
     const formatTime = (seconds) => {
         const m = Math.floor(seconds / 60);
         const s = seconds % 60;
@@ -255,203 +247,145 @@ const CookingMode = () => {
     const instructions = recipe.instructions || [];
     const stepText = instructions.length > 0 ? instructions[currentStep] : "No instructions available.";
     
+    // Logic to show "Timer" tip if regex matches
+    const timerMatch = stepText.match(/(\d+)\s*min/i);
+    const hasTimer = !!timerMatch;
+    
     const displayText = (targetLang !== 'en' && translations[currentStep]?.[targetLang]) 
                         ? translations[currentStep][targetLang] 
                         : stepText;
 
-    // Progress
     const progress = Math.round(((currentStep + 1) / instructions.length) * 100);
 
     return (
         <div className="cooking-mode-container">
+            {/* 1. Header */}
             <header className="cooking-header">
-                <div className="language-selector">
-                    <select value={targetLang} onChange={(e) => handleLangChange(e.target.value)} disabled={isTranslating}>
+                <button onClick={() => navigate('/')} className="control-btn btn-secondary">
+                    ← Exit
+                </button>
+                <div style={{display:'flex', gap:'1rem', alignItems:'center'}}>
+                    <h3 className="recipe-title">{recipe.name}</h3>
+                    
+                    {/* Language Selector Inline */}
+                    <select 
+                        value={targetLang} 
+                        onChange={(e) => handleLangChange(e.target.value)} 
+                        disabled={isTranslating}
+                        style={{padding:'0.5rem', borderRadius:'0.5rem', border:'1px solid #ccc'}}
+                    >
                         <option value="en">English</option>
-                        <option value="hi">Hindi (हिंदी)</option>
-                        <option value="es">Spanish (Español)</option>
-                        <option value="fr">French (Français)</option>
+                        <option value="hi">Hindi</option>
+                        <option value="es">Spanish</option>
+                        <option value="fr">French</option>
                     </select>
                 </div>
-                <button onClick={() => navigate('/')} className="btn-back">← Exit</button>
-                <h3 className="recipe-title">{recipe.name}</h3>
-                <button 
-                    className={`btn-mic ${isListening ? 'active' : ''}`} 
+                
+                 <button 
+                    className={`control-btn ${isListening ? 'mic-active' : 'btn-secondary'}`} 
                     onClick={toggleListening}
-                    title="Voice Commands: Next, Back, Repeat, Start Timer"
+                    title="Say: 'Next', 'Back', 'Read'"
                 >
                     {isListening ? '🎙️ Listening...' : '🎙️ Mic Off'}
                 </button>
             </header>
-            
-            {/* Voice Debug Info */}
-            <div style={{ textAlign: 'center', color: '#666', fontSize: '0.8rem', height: '1.2rem' }}>
-                {isListening && lastHeard && <span>Heard: "{lastHeard}"</span>}
+
+            {/* 2. Main Content Area */}
+            <div className="cooking-content">
+                <div className="step-card">
+                    {/* Left: Visual Placeholder */}
+                    <div className="step-visual">
+                        {/* Could be an icon or image based on keyword analysis later */}
+                        <span>🥣</span>
+                    </div>
+
+                    {/* Right: Content */}
+                    <div className="step-details">
+                        <div className="step-header">
+                            <span className="step-number">Step {currentStep + 1}</span>
+                            {/* Contextual Timer Hint */}
+                            {hasTimer && (
+                                <div className="step-timer">
+                                    <span>⏱ {timerMatch[0]}</span>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="instruction-text">
+                            {isTranslating ? 
+                                <span style={{color:'#94a3b8'}}>Translating step...</span> : 
+                                displayText
+                            }
+                        </div>
+
+                        {/* Contextual Tips Footer inside card */}
+                        <div className="step-tips">
+                            {hasTimer ? "Tip: Say 'Start Timer' to begin counting down." : "Tip: Keep specific utensils ready."}
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            <div className="progress-bar-container">
-                <div className="progress-bar" style={{ width: `${progress}%` }}></div>
-            </div>
-            <div className="progress-text">Step {currentStep + 1} of {instructions.length}</div>
+            {/* 3. Footer Controls */}
+            <footer className="cooking-footer">
+                <div className="controls-grid">
+                    {/* Progress Bar Row */}
+                    <div className="progress-section">
+                        <div className="progress-labels">
+                            <span>Step {currentStep + 1}</span>
+                            <span>{instructions.length} Total</span>
+                        </div>
+                        <div className="progress-trough">
+                            <div className="progress-fill" style={{ width: `${progress}%` }}></div>
+                        </div>
+                    </div>
 
-            <main className="step-display">
-                <div className="step-content">
-                    {isTranslating ? <span className="translating-spinner">Translating...</span> :  displayText}
-                </div>
-            </main>
-
-            {/* Timer Overlay/Panel */}
-            {timer && (
-                <div className="timer-panel">
-                    <span className="timer-display">{formatTime(timer.remaining)}</span>
-                    <button onClick={() => setIsTimerRunning(!isTimerRunning)}>
-                        {isTimerRunning ? '⏸' : '▶'}
-                    </button>
-                    <button onClick={() => setTimer(null)}>❌</button>
-                </div>
-            )}
-
-            <footer className="cooking-controls">
-                <button onClick={handlePrev} disabled={currentStep === 0} className="btn-control">Previous</button>
-                <div className="center-controls">
-                    <button onClick={readStep} className="btn-speak">{isSpeaking ? '🔊' : '🔈'} Read</button>
-                     {/* Detect Timer Button */}
-                    {stepText.match(/(\d+)\s*min/i) && !timer && (
-                        <button onClick={detectAndStartTimer} className="btn-timer-suggest">
-                            ⏱ Start {stepText.match(/(\d+)\s*min/i)[1]}m Timer
+                    {/* Control Buttons Row */}
+                    <div style={{justifySelf:'end'}}>
+                         <button 
+                            className="control-btn btn-secondary" 
+                            onClick={handlePrev}
+                            disabled={currentStep === 0}
+                        >
+                            Previous
                         </button>
-                    )}
+                    </div>
+
+                    <div style={{display:'flex', gap:'1rem'}}>
+                         <button 
+                            className="control-btn btn-primary btn-icon" 
+                            onClick={isSpeaking ? stopSpeaking : readStep}
+                            title="Read Aloud"
+                        >
+                            {isSpeaking ? '🔇' : '🔊'}
+                        </button>
+                        
+                        {/* Timer Control if Running */}
+                        {isTimerRunning && (
+                            <div className="control-btn" style={{background:'#fef3c7', color:'#d97706'}}>
+                                ⏳ {formatTime(timer.remaining)}
+                            </div>
+                        )}
+                    </div>
+
+                    <div style={{justifySelf:'start'}}>
+                        <button 
+                            className="control-btn btn-primary" 
+                            onClick={handleNext}
+                            disabled={currentStep === instructions.length - 1}
+                        >
+                            Next Step →
+                        </button>
+                    </div>
                 </div>
-                <button onClick={handleNext} disabled={currentStep === instructions.length - 1} className="btn-control">Next</button>
+                
+                {/* Voice Debug Overlay (Small) */}
+                {isListening && lastHeard && (
+                    <div style={{textAlign:'center', marginTop:'1rem', fontSize:'0.8rem', color:'#94a3b8'}}>
+                        Heard: "{lastHeard}"
+                    </div>
+                )}
             </footer>
-            
-            <style>{`
-                .cooking-mode-container {
-                    display: flex;
-                    flex-direction: column;
-                    height: 100vh;
-                    background: #1a1a1a;
-                    color: white;
-                    font-family: 'Inter', sans-serif;
-                }
-                .cooking-header {
-                    padding: 1rem;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    background: #2a2a2a;
-                    gap: 1rem;
-                }
-                .recipe-title {
-                    flex: 1;
-                    text-align: center;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-                .language-selector select {
-                    background: #444;
-                    color: white;
-                    border: 1px solid #666;
-                    padding: 0.5rem;
-                    border-radius: 4px;
-                }
-                .btn-back, .btn-mic {
-                    background: none;
-                    border: 1px solid #444;
-                    color: #fff;
-                    padding: 0.5rem 1rem;
-                    cursor: pointer;
-                    border-radius: 4px;
-                }
-                .btn-mic.active {
-                    background: #ef4444;
-                    border-color: #ef4444;
-                }
-                .progress-bar-container {
-                    height: 6px;
-                    background: #333;
-                    width: 100%;
-                }
-                .progress-bar {
-                    height: 100%;
-                    background: #10b981;
-                    transition: width 0.3s;
-                }
-                .progress-text {
-                    text-align: right;
-                    padding: 0.5rem 1rem;
-                    font-size: 0.8rem;
-                    color: #888;
-                }
-                .step-display {
-                    flex: 1;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 2rem;
-                    text-align: center;
-                }
-                .step-content {
-                    font-size: 2rem;
-                    line-height: 1.5;
-                    max-width: 800px;
-                }
-                .translating-spinner {
-                    color: #fbbf24;
-                    font-style: italic;
-                }
-                .cooking-controls {
-                    padding: 2rem;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    background: #2a2a2a;
-                }
-                .btn-control {
-                    font-size: 1.2rem;
-                    padding: 1rem 2rem;
-                    background: #10b981;
-                    color: white;
-                    border: none;
-                    border-radius: 8px;
-                    cursor: pointer;
-                }
-                .btn-control:disabled {
-                    background: #444;
-                    cursor: not-allowed;
-                }
-                .center-controls {
-                    display: flex;
-                    gap: 1rem;
-                }
-                .btn-speak, .btn-timer-suggest {
-                    background: #4b5563;
-                    color: white;
-                    border: none;
-                    padding: 0.8rem 1.5rem;
-                    border-radius: 6px;
-                    cursor: pointer;
-                }
-                .timer-panel {
-                    position: fixed;
-                    bottom: 100px;
-                    left: 50%;
-                    transform: translateX(-50%);
-                    background: #000;
-                    border: 2px solid #10b981;
-                    padding: 1rem;
-                    border-radius: 10px;
-                    display: flex;
-                    gap: 1rem;
-                    align-items: center;
-                }
-                .timer-display {
-                    font-size: 1.5rem;
-                    font-weight: bold;
-                    color: #10b981;
-                }
-            `}</style>
         </div>
     );
 };

@@ -429,3 +429,219 @@ input[type=range]::-webkit-slider-runnable-track {
     font-family: inherit;
 }
 
+
+/* --- Cooking Mode Overhaul --- */
+.cooking-mode-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background-color: var(--background);
+  color: var(--text-main);
+  font-family: 'Inter', sans-serif;
+}
+
+.cooking-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background: var(--surface);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+}
+
+.cooking-header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.cooking-content {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem;
+  overflow-y: auto;
+}
+
+.step-card {
+  background: var(--surface);
+  border-radius: 1rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  max-width: 800px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr;
+  overflow: hidden;
+  transition: transform 0.3s ease;
+}
+
+@media (min-width: 768px) {
+  .step-card {
+    grid-template-columns: 1fr 1.5fr; /* Visual | Content */
+    min-height: 400px;
+  }
+}
+
+.step-visual {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  color: white;
+  font-size: 4rem;
+  min-height: 200px;
+}
+
+.step-details {
+  padding: 2.5rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.step-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.step-number {
+  background: var(--primary);
+  color: white;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.step-timer {
+  background: #fef3c7;
+  color: #d97706;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.instruction-text {
+  font-size: 1.5rem;
+  line-height: 1.6;
+  color: var(--text-main);
+  text-align: left; /* Explicit user request */
+  margin-bottom: 2rem;
+}
+
+.step-tips {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid #e2e8f0;
+  font-size: 0.9rem;
+  color: #64748b;
+  font-style: italic;
+}
+
+/* Controls Footer */
+.cooking-footer {
+  background: var(--surface);
+  padding: 1.5rem 2rem;
+  border-top: 1px solid #e2e8f0;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 1rem;
+  align-items: center;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.progress-section {
+  grid-column: 1 / -1;
+  margin-bottom: 1rem;
+}
+
+.progress-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.875rem;
+  color: #64748b;
+  margin-bottom: 0.5rem;
+}
+
+.progress-trough {
+  height: 8px;
+  background: #e2e8f0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
+  transition: width 0.5s ease;
+}
+
+.control-btn {
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.75rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.2s;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-secondary {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.btn-secondary:hover {
+  background: #e2e8f0;
+  color: #475569; 
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: white;
+  box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.3);
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+  transform: translateY(-2px);
+}
+
+.btn-icon {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 50%;
+  padding: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 1.25rem;
+}
+
+.mic-active {
+  background: #fee2e2;
+  color: #ef4444;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
