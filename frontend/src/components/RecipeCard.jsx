@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 const RecipeCard = ({ recipe, onInteraction }) => {
+  const navigate = useNavigate();
   const [isLiked, setIsLiked] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
 
@@ -53,20 +55,66 @@ const RecipeCard = ({ recipe, onInteraction }) => {
 
       {/* 2. Title */}
       <div style={{ marginBottom: '0.75rem' }}>
-          <h3 style={{ margin: 0, color: 'var(--text-main)', fontSize: '1.25rem', lineHeight: '1.3', fontWeight: '700' }}>
+          <h3 style={{ 
+              margin: 0, 
+              color: 'var(--text-main)', 
+              fontSize: '1.25rem', 
+              lineHeight: '1.3', 
+              fontWeight: '700',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              minHeight: '2.6em' // Reserve space for 2 lines to align cards
+          }}>
             {recipe.name}
           </h3>
+          
+          {/* New Tags */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.5rem' }}>
+            {recipe.diet && (
+                <span style={{ fontSize: '0.75rem', padding: '2px 6px', borderRadius: '4px', background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', whiteSpace: 'nowrap' }}>
+                    {recipe.diet}
+                </span>
+            )}
+            {recipe.cuisine && (
+                <span style={{ fontSize: '0.75rem', padding: '2px 6px', borderRadius: '4px', background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', whiteSpace: 'nowrap' }}>
+                    {recipe.cuisine}
+                </span>
+            )}
+             {recipe.course && (
+                <span style={{ fontSize: '0.75rem', padding: '2px 6px', borderRadius: '4px', background: '#f5f5f5', color: '#525252', border: '1px solid #e5e5e5', whiteSpace: 'nowrap' }}>
+                    {recipe.course}
+                </span>
+            )}
+          </div>
       </div>
 
       {/* 3. Essential Time Metadata */}
-      <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', color: 'var(--text-muted)', fontSize: '0.9rem', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+      <div style={{ 
+          display: 'flex', 
+          gap: '0.8rem', 
+          marginBottom: '1rem', 
+          color: 'var(--text-muted)', 
+          fontSize: '0.9rem', 
+          alignItems: 'center',
+          flexWrap: 'wrap' // Allow wrapping if strictly needed, but prefer single line
+      }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', whiteSpace: 'nowrap' }}>
             <span>⏱️</span> <strong>{recipe.prep_time + recipe.cook_time}m</strong> total
           </div>
           <div style={{ width: '1px', height: '12px', background: 'var(--border)' }}></div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', whiteSpace: 'nowrap' }}>
             <span>🍳</span> {recipe.cook_time}m cook
           </div>
+          {recipe.servings > 0 && (
+            <>
+                <div style={{ width: '1px', height: '12px', background: 'var(--border)' }}></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', whiteSpace: 'nowrap' }}>
+                    <span>👥</span> {recipe.servings} ppl
+                </div>
+            </>
+          )}
       </div>
 
       {/* Toggle Details Button */}
@@ -76,7 +124,8 @@ const RecipeCard = ({ recipe, onInteraction }) => {
               background: 'none', border: 'none', color: 'var(--primary)', 
               fontSize: '0.9rem', cursor: 'pointer', fontWeight: '600', 
               padding: '0', textAlign: 'left', marginBottom: '1rem',
-              display: 'flex', alignItems: 'center', gap: '0.5rem'
+              display: 'flex', alignItems: 'center', gap: '0.5rem',
+              whiteSpace: 'nowrap'
           }}
       >
           {showDetails ? 'Hide Ingredients' : 'Show Ingredients & Details'} 
@@ -124,20 +173,50 @@ const RecipeCard = ({ recipe, onInteraction }) => {
                         </div>
                     </div>
                 )}
+
+                {/* Instructions */}
+                {recipe.instructions && (
+                    <div style={{ marginTop: '1rem' }}>
+                         <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '0.85rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                            Directions
+                        </h4>
+                        <ol style={{ paddingLeft: '1.2rem', margin: 0, fontSize: '0.9rem', color: 'var(--text-main)', lineHeight: '1.6' }}>
+                            {Array.isArray(recipe.instructions) ? (
+                                recipe.instructions.map((step, idx) => (
+                                    <li key={idx} style={{ marginBottom: '0.5rem' }}>{step}</li>
+                                ))
+                            ) : (
+                                recipe.instructions.split('.').map((step, idx) => {
+                                    const cleanStep = step.trim();
+                                    if (!cleanStep) return null;
+                                    return <li key={idx} style={{ marginBottom: '0.5rem' }}>{cleanStep}.</li>;
+                                })
+                            )}
+                        </ol>
+                    </div>
+                )}
           </div>
       )}
 
       {/* 7. CTAs */}
       <div style={{ marginTop: 'auto', display: 'grid', gap: '0.75rem' }}>
+        <button 
+          className="btn"
+          onClick={() => navigate(`/cook/${recipe.id}`)}
+          style={{ textAlign: 'center', width: '100%', justifyContent: 'center', background: 'var(--primary)', color: 'white', border: 'none' }}
+        >
+          👩‍🍳 Start Cooking Mode
+        </button>
+
         <a 
           href={recipe.url} 
           target="_blank" 
           rel="noopener noreferrer" 
-          className="btn"
+          className="btn btn-outline"
           onClick={() => handleView('web', recipe.url)}
           style={{ textAlign: 'center', width: '100%', justifyContent: 'center' }}
         >
-          View Full Recipe
+          View Source
         </a>
 
         {recipe.youtube_link && (
