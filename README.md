@@ -1,115 +1,129 @@
-# AI Cooking Assistant 🍳
+# 🍳 AI Cooking Assistant
 
-The AI Cooking Assistant is a smart kitchen companion that helps you reduce food waste and cook delicious meals. It combines ingredient detection (computer vision), personalized recipe recommendations, and perishability analysis to guide your cooking journey.
+A smart, AI-powered kitchen companion that helps you reduce food waste and cook delicious meals. Features ingredient detection, personalized recipe recommendations, and a hands-free interactive cooking mode.
 
-## 🌟 Features
+## 🌟 Key Features
 
-*   **📸 Ingredient Detection**: Upload a photo of your fridge or pantry, and the AI (YOLOv11) will identify the ingredients for you.
-*   **🥗 Smart Recipe Recommendations**: Get personalized recipe suggestions based on your available ingredients, cooking time, and dietary preferences.
-*   **👤 Personalized Experience**: Your recommendations are automatically filtered based on your unique profile settings—ensuring recipes match your dietary needs (Vegan, Keto, etc.), strictly avoid your allergies, and align with your health goals.
-*   **❤️ Save & Like Recipes**: Keep track of your culinary journey by liking and saving your favorite recipes. The app remembers your interactions to help you build your own personal cookbook.
-*   **⏳ Perishability Analysis**: The system (powered by Llama 3) analyzes your ingredients to prioritize items that are nearing expiration, helping you save food.
-*   **� Secure Login & Signup**: Create your own account to access your saved data from anywhere. The app uses secure authentication (JWT) to protect your information and sync your preferences.
-*   **📺 Video Guides**: Integrated YouTube links for recipes to follow along easily.
-*   **🛍️ Missing Ingredients**: Automatically identifies missing items and provides links to purchase them (e.g., via Blinkit).
-*   **🔐 Secure Login & Signup**: Create your own account to access your saved data from anywhere. The app uses secure authentication (JWT) to protect your information and sync your preferences.
-## 🛠️ Prerequisites
+### 🔍 Smart Ingredient Detection
+-   **AI Vision**: Uses **YOLO (You Only Look Once)** to instantly identify ingredients from your camera or uploaded photos.
+-   **Pantry Management**: Automatically adds detected items to your digital pantry.
 
-Before running the project, ensure you have the following installed:
+### 🤖 Intelligent Recipe Recommendations
+-   **Taste Matching**: Suggests recipes based on your available ingredients, prep time preferences, and missing ingredients tolerance.
+-   **Personalized Ranking**: Uses TF-IDF and Cosine Similarity to find the perfect match for your pantry.
 
-*   **Node.js** (v18 or higher)
-*   **Python** (v3.11 or higher)
-*   **Ollama**: Required for the text analysis features.
-    *   Install from [ollama.com](https://ollama.com/).
-    *   Pull the Llama 3 model: `ollama pull llama3`
+### 👨‍🍳 Immersive Cooking Mode
+-   **Step-by-Step Guidance**: Large, focused display for each instruction step.
+-   **🗣️ Voice Assistant**: Completely hands-free control!
+    -   *"Next"* / *"Back"* to navigate steps.
+    -   *"Read"* to hear the instruction spoken aloud.
+    -   *"Start Timer"* to auto-set a timer based on the step (e.g., "Cook for 5 mins").
+-   **🌐 Real-Time Translation**: Translate cooking steps instantly into **Hindi**, **Spanish**, or **French**.
+-   **Smart Timers**: Auto-detects time mentions in recipes and offers one-click timers.
 
-## 🚀 Installation & Setup
+### 👤 User Features
+-   **Secure Login**: JWT-based authentication.
+-   **Profile**: Track your favorite cuisines and diet preferences.
+-   **Favorites**: Save recipes for later.
+
+---
+
+## 🛠️ Tech Stack
+
+*   **Frontend**: React (Vite), Tailwind CSS (or custom CSS), Recharts, Web Speech API.
+*   **Backend**: Python (FastAPI), Pandas, Scikit-Learn, Deep-Translator, NLTK.
+*   **AI/ML**: YOLOv11 (Object Detection), TF-IDF (Recommendation Engine).
+*   **Database**: MongoDB (User data), Pickle (Recipe Dataset).
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+-   Node.js (v16+)
+-   Python (v3.9+)
+-   MongoDB running locally or a cloud connection string.
 
 ### 1. Backend Setup
 
-The backend is built with FastAPI and handles the AI logic.
+```bash
+cd backend
+# Create virtual environment (optional but recommended)
+python -m venv venv
+# Windows: venv\Scripts\activate
+# Mac/Linux: source venv/bin/activate
 
-1.  Navigate to the `backend` directory:
-    ```bash
-    cd backend
-    ```
+# Install dependencies
+pip install -r requirements.txt
+# Ensure deep-translator is installed for Cooking Mode
+pip install deep-translator nltk
 
-2.  (Optional but recommended) Create and activate a virtual environment:
-    ```bash
-    python -m venv venv
-    # Windows
-    venv\Scripts\activate
-    # Mac/Linux
-    source venv/bin/activate
-    ```
+# Run the server
+uvicorn main:app --reload --port 8010
+```
 
-3.  Install the required Python dependencies:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-    *Note: If `requirements.txt` is missing, basic requirements are `fastapi uvicorn sqlalchemy pandas pydantic scikit-learn nltk youtube-search ultralytics pillow ollama passlib[bcrypt] python-multipart python-jose`.*
-
-4.  **Verify Models**:
-    *   Ensure `yolo11n.pt` is present in the `backend/` directory.
-    *   Ensure `recipe_recommender_model.pkl` is present in the `backend/` directory.
+*Note: The app expects a `recipe_recommender_model.pkl` in the `backend/` directory.*
 
 ### 2. Frontend Setup
 
-The frontend is a modern React application powered by Vite.
+```bash
+cd frontend
+# Install dependencies
+npm install
+# Ensure react-router-dom is installed
+npm install react-router-dom
 
-1.  Open a new terminal and navigate to the `frontend` directory:
-    ```bash
-    cd frontend
-    ```
+# Start the dev server
+npm run dev
+```
 
-2.  Install dependencies:
-    ```bash
-    npm install
-    ```
+### 3. Usage
 
-## 🏃‍♂️ Running the Application
+1.  Open your browser at `http://localhost:5173`.
+2.  **Sign Up / Login** to access personalized features.
+3.  **Home Page**: Enter ingredients manually or use the **Camera** to detect them.
+4.  **Get Recommendations**: View matched recipes.
+5.  **Start Cooking**: Click **"Start Cooking Mode"** on any recipe card to enter the immersive view.
+    -   Enable the **Mic** to use voice commands.
+    -   Use the dropdown to **Translate** steps if needed.
 
-### Option A: One-Click Start (Windows)
+## 🗣️ Voice Commands Guide
 
-Simply double-click the `start_app.bat` file in the root directory. This will launch both the backend and frontend servers in separate windows.
+| Command | Action |
+| :--- | :--- |
+| **"Next"** | Go to the next instruction step. |
+| **"Back"** / **"Previous"** | Go to the previous step. |
+| **"Read"** / **"Repeat"** | Read the current step aloud using Text-to-Speech. |
+| **"Start Timer"** | Starts a timer if a duration (e.g., "10 mins") is found in the text. |
+| **"Stop"** | Stop the assistant from talking. |
 
-### Option B: Manual Start
+---
 
-1.  **Start the Backend**:
-    From the `backend` directory:
-    ```bash
-    python main.py
-    ```
-    The server will start at `http://localhost:8010`.
+## 📂 Project Structure
 
-2.  **Start the Frontend**:
-    From the `frontend` directory:
-    ```bash
-    npm run dev
-    ```
-    The application will run at `http://localhost:5173`.
-
-## 📖 Usage Guide
-
-1.  **Sign Up / Login**: Create an account to manage your preferences.
-2.  **Detect Ingredients**:
-    *   Go to the "Scan" or "Upload" section.
-    *   Upload an image of your ingredients.
-    *   The app will list what it found and what needs to be used soon.
-3.  **Get Recipes**:
-    *   Confirm your ingredient list.
-    *   Set your available prep/cook time.
-    *   Click "Get Recommendations" to see matched recipes.
-4.  **Cook**: Click on a recipe to view details, missing ingredients, and a video tutorial.
-
-## 🔧 Configuration
-
-*   **Port Configuration**:
-    *   Backend: Port `8010` (Adjust in `backend/main.py` if needed).
-    *   Frontend: Port `5173` (Default Vite port).
-*   **Database**: Uses SQLite (`users.db`) automatically created in the `backend` folder.
+```
+AI_Cooking/
+├── backend/
+│   ├── main.py              # FastAPI application & Logic
+│   ├── model_training.py    # Script to train recommendation model
+│   ├── recipe_recommender_model.pkl # Pre-trained model & dataset
+│   └── requirements.txt     # Python dependencies
+├── frontend/
+│   ├── src/
+│   │   ├── components/      # Reusable UI components (RecipeCard, etc.)
+│   │   ├── pages/
+│   │   │   ├── Home.jsx         # Main Dashboard
+│   │   │   └── CookingMode.jsx  # Immersive Cooking View
+│   │   ├── App.jsx          # Routing & Layout
+│   │   └── main.jsx         # Entry point
+│   └── package.json
+└── README.md
+```
 
 ## 🤝 Contributing
 
-Feel free to fork this project and submit pull requests for new features or improvements!
+Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+
+## 📄 License
+
+[MIT](https://choosealicense.com/licenses/mit/)
