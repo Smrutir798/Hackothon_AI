@@ -1,12 +1,12 @@
 import React, { useState, useRef } from 'react';
 import axios from 'axios';
 
-const DETECT_ENDPOINT = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8002/recommend').replace('/recommend', '/detect-ingredients');
+const DETECT_ENDPOINT = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8010/recommend').replace('/recommend', '/detect-ingredients');
 
 const RecipeForm = ({ onSubmit, isLoading }) => {
   const [ingredients, setIngredients] = useState('');
-  const [prepTime, setPrepTime] = useState('');
-  const [cookTime, setCookTime] = useState('');
+  const [prepTime, setPrepTime] = useState(30); // Default 30 mins
+  const [cookTime, setCookTime] = useState(45); // Default 45 mins
   const [isDetecting, setIsDetecting] = useState(false);
   const hiddenFileInput = useRef(null);
   const [detectedItems, setDetectedItems] = useState([]);
@@ -35,21 +35,17 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
 
     try {
       const response = await axios.post(DETECT_ENDPOINT, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
       
       const detected = response.data.detected_ingredients;
       if (detected && detected.length > 0) {
-        // Handle object response (new backend) or string list (old backend/fallback)
         const isObjectList = detected.length > 0 && typeof detected[0] === 'object';
         const detectedNames = detected.map(d => (typeof d === 'object' && d.name) ? d.name : d);
         
         if (isObjectList) {
             setDetectedItems(detected);
         } else {
-            // Fallback for string-only response
              setDetectedItems(detected.map(d => ({ name: d, days_to_expiry: null, priority: 'Unknown' })));
         }
 
@@ -64,10 +60,7 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
       alert('Failed to detect ingredients. Please try again.');
     } finally {
       setIsDetecting(false);
-      // Reset file input
-      if (hiddenFileInput.current) {
-        hiddenFileInput.current.value = '';
-      }
+      if (hiddenFileInput.current) hiddenFileInput.current.value = '';
     }
   };
 
@@ -87,15 +80,12 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
 
     try {
       const response = await axios.post(DETECT_ENDPOINT, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
       
       const detected = response.data.detected_ingredients;
       if (detected && detected.length > 0) {
         const isObjectList = detected.length > 0 && typeof detected[0] === 'object';
-        
         if (isObjectList) {
             setDetectedItems(detected);
         } else {
@@ -104,176 +94,193 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
       }
     } catch (err) {
       console.error("Text Analysis Error:", err);
-      // Optional: silent fail or alert
     } finally {
       setIsDetecting(false);
     }
   };
 
+  const getTimeLabel = (mins) => {
+      if (mins <= 15) return "Quick Meal ⚡";
+      if (mins <= 45) return "Balanced 🍽️";
+      return "Elaborate 👨‍🍳";
+  };
+
   return (
-    <div className="card" style={{ maxWidth: '600px', margin: '0 auto', borderTop: '4px solid var(--primary)' }}>
+    <div className="card recipe-form-card" style={{ maxWidth: '700px', margin: '0 auto', border: 'none', boxShadow: '0 10px 30px rgba(0,0,0,0.08)' }}>
       <form onSubmit={handleSubmit}>
-        <div className="input-group">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-            <label htmlFor="ingredients" className="label" style={{ marginBottom: 0 }}>
-              What ingredients do you have?
-            </label>
-            <div>
-                <input
-                    type="file"
-                    accept="image/*"
-                    ref={hiddenFileInput}
-                    onChange={handleImageUpload}
-                    style={{ display: 'none' }}
-                    disabled={isDetecting}
-                />
-                <button 
-                  type="button" 
-                  className="btn-outline" 
-                  onClick={handleClick}
-                  style={{ 
-                    padding: '0.5rem 1rem', 
-                    fontSize: '0.9rem', 
-                    cursor: 'pointer', 
-                    borderRadius: '8px', 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: '0.5rem',
-                    boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
-                  }} 
+        
+        {/* Ingredient Input Section */}
+        <div className="input-group" style={{ marginBottom: '2rem' }}>
+          <label htmlFor="ingredients" className="label" style={{ fontSize: '1.1rem', marginBottom: '1rem', display: 'block' }}>
+            What's in your kitchen?
+          </label>
+          
+          <div style={{ position: 'relative' }}>
+              <textarea
+                id="ingredients"
+                className="input"
+                placeholder="Type ingredients or scan from your fridge..."
+                rows="3"
+                value={ingredients}
+                onChange={(e) => setIngredients(e.target.value)}
+                required
+                style={{ paddingRight: '50px', fontSize: '1rem' }}
+              />
+              
+              {/* Scan Button Inside Input */}
+              <input
+                  type="file"
+                  accept="image/*"
+                  ref={hiddenFileInput}
+                  onChange={handleImageUpload}
+                  style={{ display: 'none' }}
                   disabled={isDetecting}
-                >
-                    {isDetecting ? (
-                      <>
-                        <span className="spinner" style={{ animation: 'spin 1s linear infinite' }}>⏳</span> Detecting...
-                      </>
-                    ) : (
-                      <>
-                        📷 Scan Photo
-                      </>
-                    )}
-                </button>
-            </div>
+              />
+              <button 
+                  type="button"
+                  onClick={handleClick}
+                  title="Scan Ingredients from Photo"
+                  style={{ 
+                      position: 'absolute',
+                      right: '10px',
+                      top: '10px',
+                      background: 'var(--bg-secondary)',
+                      border: 'none',
+                      borderRadius: '50%',
+                      width: '40px',
+                      height: '40px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '1.2rem',
+                      transition: 'transform 0.2s'
+                  }}
+                  onMouseOver={e => e.currentTarget.style.transform = 'scale(1.1)'}
+                  onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'}
+              >
+                  {isDetecting ? '⏳' : '📷'}
+              </button>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.8rem' }}>
+             <small style={{ color: 'var(--text-muted)' }}>
+                Separate ingredients with commas.
+             </small>
+
+             {/* Freshness Detection Inline */}
+             <button 
+                type="button" 
+                onClick={handleTextAnalysis} 
+                disabled={isDetecting || !ingredients.trim()} 
+                title="Automatically detects near-expiry ingredients and prioritizes them."
+                className="btn-text"
+                style={{ 
+                    color: ingredients.trim() ? 'var(--primary)' : 'var(--text-muted)',
+                    fontSize: '0.85rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    cursor: ingredients.trim() ? 'pointer' : 'default'
+                }}
+            >
+                {isDetecting ? 'Analyzing...' : '⚡ Check Freshness'}
+            </button>
           </div>
           
-          {/* Display Detected Items with Priority */}
+          {/* Detected Items Chips */}
           {detectedItems.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem', padding: '0.5rem', background: 'var(--bg-secondary)', borderRadius: 'var(--radius)' }}>
-                  <small style={{ width: '100%', color: 'var(--text-muted)' }}>Detected & Prioritized:</small>
+              <div style={{ marginTop: '1rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
                   {detectedItems.map((item, idx) => (
-                      <span key={idx} style={{ 
-                          display: 'inline-flex', 
-                          alignItems: 'center', 
-                          fontSize: '0.8rem', 
-                          background: 'white', 
+                      <span key={idx} className="badge" style={{ 
+                          background: 'var(--bg-secondary)',
                           border: `1px solid ${getPriorityColor(item.priority, item.days_to_expiry)}`,
-                          padding: '0.2rem 0.5rem', 
-                          borderRadius: '1rem',
-                          color: 'var(--text-primary)'
+                          color: 'var(--text-primary)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.3rem'
                       }}>
                           <span style={{ 
                               width: '8px', 
                               height: '8px', 
                               borderRadius: '50%', 
-                              background: getPriorityColor(item.priority, item.days_to_expiry),
-                              marginRight: '0.3rem'
+                              background: getPriorityColor(item.priority, item.days_to_expiry)
                            }}></span>
-                          <b>{item.name}</b>
-                          {item.days_to_expiry !== 999 && item.days_to_expiry !== null && (
-                              <span style={{ marginLeft: '0.3rem', color: 'var(--text-muted)' }}>
-                                  ({item.days_to_expiry}d left)
-                              </span>
-                          )}
+                          {item.name}
                       </span>
                   ))}
               </div>
           )}
-
-          <textarea
-            id="ingredients"
-            className="input"
-            placeholder="e.g. chicken breast, garlic, basil, tomatoes..."
-            rows="3"
-            value={ingredients}
-            onChange={(e) => setIngredients(e.target.value)}
-            required
-          />
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem' }}>
-            <small style={{ color: 'var(--text-muted)' }}>
-                Separate ingredients with commas.
-            </small>
-            <button 
-                type="button" 
-                onClick={handleTextAnalysis} 
-                disabled={isDetecting || !ingredients.trim()} 
-                style={{ 
-                    background: ingredients.trim() ? '#eff6ff' : 'transparent', // Light blue bg when active
-                    border: '1px solid transparent',
-                    borderColor: ingredients.trim() ? 'var(--primary)' : 'transparent',
-                    color: ingredients.trim() ? 'var(--primary)' : 'var(--text-muted)',
-                    fontWeight: 600,
-                    fontSize: '0.85rem',
-                    cursor: ingredients.trim() ? 'pointer' : 'not-allowed',
-                    padding: '0.4rem 0.8rem',
-                    borderRadius: '20px',
-                    transition: 'all 0.2s',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.4rem',
-                    whiteSpace: 'nowrap'
-                }}
-            >
-                {isDetecting ? (
-                    <>
-                        <span className="spinner" style={{ animation: 'spin 1s linear infinite' }}>⏳</span> Analyzing...
-                    </>
-                ) : (
-                    <>
-                        ⚡ Check Freshness
-                    </>
-                )}
-            </button>
-          </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+        <div style={{ borderTop: '1px solid var(--border)', margin: '0 -2rem 2rem -2rem' }}></div>
+
+        {/* Sliders for Time */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3rem', marginBottom: '2.5rem' }}>
+          
+          {/* Prep Time Slider */}
           <div className="input-group">
-            <label htmlFor="prepTime" className="label">
-              Max Prep Time (mins)
-            </label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <label className="label">Prep Time</label>
+                <span style={{ fontWeight: 600, color: 'var(--primary)' }}>{prepTime} min</span>
+            </div>
             <input
-              type="number"
-              id="prepTime"
-              className="input"
-              placeholder="30"
-              min="0"
+              type="range"
+              min="5"
+              max="60"
+              step="5"
               value={prepTime}
-              onChange={(e) => setPrepTime(e.target.value)}
+              onChange={(e) => setPrepTime(Number(e.target.value))}
+              className="range-slider"
+              style={{ width: '100%' }}
             />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                <span>5m</span>
+                <span>{getTimeLabel(prepTime)}</span>
+                <span>60m</span>
+            </div>
           </div>
 
+          {/* Cook Time Slider */}
           <div className="input-group">
-            <label htmlFor="cookTime" className="label">
-              Max Cook Time (mins)
-            </label>
+             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <label className="label">Cook Time</label>
+                <span style={{ fontWeight: 600, color: 'var(--primary)' }}>{cookTime} min</span>
+            </div>
             <input
-              type="number"
-              id="cookTime"
-              className="input"
-              placeholder="45"
-              min="0"
+              type="range"
+              min="5"
+              max="120"
+              step="5"
               value={cookTime}
-              onChange={(e) => setCookTime(e.target.value)}
+              onChange={(e) => setCookTime(Number(e.target.value))}
+              className="range-slider"
+              style={{ width: '100%' }}
             />
+             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                <span>5m</span>
+                <span>{getTimeLabel(cookTime)}</span>
+                <span>2h</span>
+            </div>
           </div>
         </div>
 
-        <button type="submit" className="btn" disabled={isLoading} style={{ marginTop: '1rem' }}>
-          {isLoading ? (
-            <span>Cooking up ideas...</span>
-          ) : (
-            <span>Get Recommendations ✨</span>
-          )}
+        <button 
+            type="submit" 
+            className="btn btn-gradient" 
+            disabled={isLoading} 
+            style={{ 
+                width: '100%', 
+                padding: '1rem', 
+                fontSize: '1.1rem', 
+                borderRadius: '12px',
+                background: 'linear-gradient(135deg, var(--primary) 0%, #ec4899 100%)',
+                color: 'white',
+                border: 'none',
+                boxShadow: '0 4px 15px rgba(225, 29, 72, 0.4)'
+            }}
+        >
+          {isLoading ? 'Cooking up ideas...' : 'Generate Personalized Recipes ✨'}
         </button>
       </form>
     </div>

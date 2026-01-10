@@ -9,3 +9,8 @@ ultralytics
 python-multipart
 Pillow
 ollama
+google-generativeai
+python-jose[cryptography]
+passlib[bcrypt]
+sqlalchemy
+bcrypt==4.0.1

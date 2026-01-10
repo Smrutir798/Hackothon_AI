@@ -1,9 +1,12 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends, status
 from pydantic import BaseModel
+from deep_translator import GoogleTranslator
 import pickle
 import pandas as pd
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import os
+# Force CPU usage for PyTorch/YOLO to reserve VRAM for Ollama
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 import nltk
 from nltk.corpus import stopwords
 import string
@@ -14,20 +17,57 @@ from youtube_search import YoutubeSearch
 import concurrent.futures
 from ultralytics import YOLO
 from PIL import Image
-import io
-import ollama
 import json
+import io
+import base64
+from fastapi.middleware.cors import CORSMiddleware
+from datetime import timedelta, datetime
+from fastapi.security import OAuth2PasswordRequestForm
+
+# Database & Auth
+from database import get_users_collection, get_recipe_collection
+from auth import get_current_user, create_access_token, get_password_hash, verify_password, ACCESS_TOKEN_EXPIRE_MINUTES, UserInDB
 
 # Initialize FastAPI
 app = FastAPI()
 
-# Input schema
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Models ---
 class RecipeRequest(BaseModel):
     ingredients: str
     prep_time: int
     cook_time: int
 
+class UserCreate(BaseModel):
+    email: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class UserProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    experience_level: Optional[str] = None
+    dietary_preferences: Optional[List[str]] = None
+    allergies: Optional[List[str]] = None
+    health_goals: Optional[List[str]] = None
+
+class InteractionRequest(BaseModel):
+    action: str
+    recipe_name: str
+    details: Optional[Dict[str, Any]] = None
+
 class Recipe(BaseModel):
+    id: int
     name: str
     translated_name: str
     ingredients: str
@@ -35,18 +75,34 @@ class Recipe(BaseModel):
     cook_time: int
     url: str
     youtube_link: str
+    missing_ingredients: List[Dict[str, str]] = []
+    match_score: Optional[int] = None # 0-100 percentage
+    instructions: List[str] = []
+    cuisine: Optional[str] = None
+    course: Optional[str] = None
+    diet: Optional[str] = None
+    servings: Optional[int] = None
 
-# Global variables for the model
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+class TranslationRequest(BaseModel):
+    text: str
+    target_lang: str
+
+# --- Globals & Setup ---
 model_data = None
 tfidf_vectorizer = None
-tfidf_matrix = None
 tfidf_matrix = None
 df_english = None
 yolo_model = None
 
 MODEL_PATH = r"recipe_recommender_model.pkl"
 
-# Setup NLTK
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
@@ -65,10 +121,25 @@ def load_model():
                 model_data = pickle.load(f)
             
             # Unpack the model data
-            # Assumes model_data is a dictionary as specified in user request
             tfidf_vectorizer = model_data['tfidf_vectorizer']
             tfidf_matrix = model_data['tfidf_matrix']
-            df_english = model_data['dataframe']
+            
+            # Load from MongoDB
+            mongo_recipes = get_recipe_collection()
+            if mongo_recipes is not None:
+                print("Loading recipes from MongoDB...")
+                # Sort by Srno to match TF-IDF matrix alignment!
+                cursor = mongo_recipes.find().sort("Srno", 1)
+                recipes_list = list(cursor)
+                if recipes_list:
+                    df_english = pd.DataFrame(recipes_list)
+                    print(f"Loaded {len(df_english)} recipes from MongoDB.")
+                else:
+                     print("MongoDB collection text empty. Fallback to pickle dataframe.")
+                     df_english = model_data['dataframe']
+            else:
+                 print("MongoDB not connected. Fallback to pickle dataframe.")
+                 df_english = model_data['dataframe']
             
             print("Model loaded successfully.")
         else:
@@ -76,27 +147,48 @@ def load_model():
     except Exception as e:
         print(f"Error loading model: {e}")
 
-# Load model on startup
 load_model()
 
-# Initialize YOLO model
 try:
-    yolo_model = YOLO('yolov8n.pt') 
-    print("YOLO model loaded successfully.")
+    import ollama
+    print("Ollama module loaded. Using 'llama3' for text analysis.")
+except ImportError:
+    print("Error: Ollama module not found. Please install with `pip install ollama`.")
+
+try:
+    yolo_model = YOLO('yolo11n.pt') 
+    print("YOLO model loaded.")
 except Exception as e:
     print(f"Error loading YOLO model: {e}")
 
-# Helper Functions from User Request
-def preprocess_text(text):
+# --- Helper Functions ---
+COOKING_STOPWORDS = {
+    "teaspoon", "tsp", "tablespoon", "tbsp", "cup", "gram", "gms", "g", "kg", "ml", "liter", "litre", "l", "lb", "oz", "pinch", "bunch", "sprig", "cloves",
+    "chopped", "sliced", "diced", "minced", "grated", "crushed", "beaten", "whisked", "sifted", "melted", "slit", "halved", "quartered", "cubed",
+    "peeled", "cored", "seeded", "washed", "cleaned", "dried", "roasted", "toasted", "fried", "boiled", "warm", "cold", "hot", "lukewarm",
+    "taste", "size", "small", "medium", "large", "fresh", "whole", "powder", "seeds", "oil", "leaves", "wedges", "fillet", "fillets", "boneless", "skinless",
+    "water", "salt", "ice" 
+}
+
+def clean_ingredient_text(text):
     text = text.lower()
-    text = ''.join([char for char in text if char not in string.punctuation])
+    text = ''.join([i for i in text if not i.isdigit()])
+    text = text.replace("/", " ").replace(".", " ")
     tokens = nltk.word_tokenize(text)
-    stop_words = set(stopwords.words('english'))
-    tokens = [word for word in tokens if word not in stop_words]
-    return ' '.join(tokens)
+    clean_tokens = []
+    for word in tokens:
+        word = word.strip(string.punctuation)
+        if not word: continue
+        if word in COOKING_STOPWORDS: continue
+        if word in stopwords.words('english'): continue
+        if len(word) < 2: continue 
+        clean_tokens.append(word)
+    return ' '.join(clean_tokens)
+
+def preprocess_text(text):
+    return clean_ingredient_text(text)
 
 def calculate_similarity(user_ingredients, user_prep_time, user_cook_time):
-    # Check if inputs are available
     if tfidf_vectorizer is None or tfidf_matrix is None or df_english is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
@@ -104,18 +196,14 @@ def calculate_similarity(user_ingredients, user_prep_time, user_cook_time):
     user_tfidf = tfidf_vectorizer.transform([user_ingredients_text])
     cosine_similarities = cosine_similarity(user_tfidf, tfidf_matrix)[0]
 
-    # Calculate time similarities
     max_prep = df_english['PrepTimeInMins'].max()
     max_cook = df_english['CookTimeInMins'].max()
-    
-    # Avoid division by zero
     if max_prep == 0: max_prep = 1
     if max_cook == 0: max_cook = 1
 
     prep_time_similarity = 1 - abs(df_english['PrepTimeInMins'] - user_prep_time) / max_prep
     cook_time_similarity = 1 - abs(df_english['CookTimeInMins'] - user_cook_time) / max_cook
 
-    # Ensure lengths match (just in case)
     min_length = min(len(cosine_similarities), len(prep_time_similarity), len(cook_time_similarity))
     cosine_similarities = cosine_similarities[:min_length]
     prep_time_similarity = prep_time_similarity[:min_length]
@@ -127,12 +215,15 @@ def calculate_similarity(user_ingredients, user_prep_time, user_cook_time):
 def get_recommendations_logic(user_ingredients_list, user_prep_time, user_cook_time, top_n=9):
     combined_similarity = calculate_similarity(user_ingredients_list, user_prep_time, user_cook_time)
     sorted_indices = combined_similarity.argsort()[::-1]
-    
-    # Get top N indices
     top_indices = sorted_indices[:top_n]
-    
-    # Fetch from dataframe
     recommendations = df_english.iloc[top_indices].copy()
+    
+    if hasattr(combined_similarity, 'iloc'):
+        scores = combined_similarity.iloc[top_indices] * 100
+    else:
+        scores = combined_similarity[top_indices] * 100
+        
+    recommendations['similarity_score'] = scores.astype(int).values
     return recommendations
 
 def get_youtube_link(query):
@@ -159,9 +250,14 @@ def analyze_perishability(ingredients_list, extra_text=""):
     2. Combine them with the 'Detected Ingredients List'.
     3. Remove duplicates.
     4. For each ingredient, estimate:
-       - "days_to_expiry": (int) estimated days until expiry (use 999 for non-perishables like salt/spices)
+       - "days_to_expiry": (int) estimated days until expiry (use 999 for non-perishables like salt/spices/rice)
        - "priority": (string) "High", "Medium", or "Low" based on urgency to use.
     
+    STRICT Guidelines for Priority:
+    - High (Red): Raw meats (Chicken, Beef, Pork), Seafood, Leafy Greens. Use within 1-3 days.
+    - Medium (Yellow): Eggs, Milk, Soft Cheeses, Most Fresh Vegetables/Fruits. Use within 4-14 days.
+    - Low (Green): Rice, Grains, Pasta, Hard Cheeses, Frozen Foods, Canned Goods, Spices. Use within 15+ days.
+
     Return ONLY a valid JSON array where each object has:
     - "name": (string) ingredient name
     - "days_to_expiry": (int)
@@ -171,24 +267,259 @@ def analyze_perishability(ingredients_list, extra_text=""):
     """
     
     try:
-        response = ollama.chat(model='llama3', messages=[
+        response = ollama.chat(model='llama3', format='json', messages=[
             {'role': 'user', 'content': prompt},
         ])
-        
         content = response['message']['content']
-        # Clean up potential markdown code blocks if the model adds them despite instructions
-        if "```json" in content:
-            content = content.replace("```json", "").replace("```", "")
-        elif "```" in content:
-            content = content.replace("```", "")
-            
-        return json.loads(content.strip())
-    except Exception as e:
-        print(f"Error analyzing perishability with Ollama: {e}")
-        # Fallback if Ollama fails
-        fallback_list = ingredients_list + (extra_text.split(',') if extra_text else [])
-        return [{"name": ing.strip(), "days_to_expiry": 999, "priority": "Unknown"} for ing in fallback_list if ing.strip()]
+        clean_content = content.replace("```json", "").replace("```", "").strip()
+        
+        try:
+             data = json.loads(clean_content)
+        except json.JSONDecodeError:
+             start = clean_content.find('[')
+             end = clean_content.rfind(']')
+             if start != -1 and end != -1:
+                 data = json.loads(clean_content[start:end+1])
+             else:
+                 raise
 
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if isinstance(value, list):
+                    return value
+            return [data]
+            
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+            
+        return [] 
+        
+    except Exception as e:
+        print(f"Error analyzing perishability: {e}")
+        fallback_list = ingredients_list + (extra_text.split(',') if extra_text else [])
+        return [{"name": ing.strip(), "days_to_expiry": 7, "priority": "Medium"} for ing in fallback_list if ing.strip()]
+
+def process_recipe_row(row, user_ingredients_list=[]):
+    ingreds = str(row['Ingredients']) if 'Ingredients' in row and pd.notna(row['Ingredients']) else "Not listed"
+    recipe_name = str(row['RecipeName'])
+    youtube_url = get_youtube_link(recipe_name)
+    
+    r_ing_list = []
+    if ingreds.strip().startswith("[") and ingreds.strip().endswith("]"):
+        import ast
+        try:
+            r_ing_list = ast.literal_eval(ingreds)
+        except:
+            r_ing_list = [x.strip() for x in ingreds.replace('[','').replace(']','').replace("'", "").split(',')]
+    else:
+        r_ing_list = [x.strip() for x in ingreds.split(',')]
+    
+    missing = []
+    user_ings_lower = [u.lower() for u in user_ingredients_list]
+    added_missing = set()
+
+    for r_ing in r_ing_list:
+        cleaned_r_ing = clean_ingredient_text(r_ing)
+        if not cleaned_r_ing: continue
+
+        match = False
+        for u_ing in user_ings_lower:
+            if u_ing in cleaned_r_ing or cleaned_r_ing in u_ing: 
+                match = True
+                break
+        
+        if not match: 
+            display_name = cleaned_r_ing.title()
+            if display_name not in added_missing:
+                link = f"https://blinkit.com/s/?q={display_name.replace(' ', '+')}"
+                missing.append({"name": display_name, "link": link})
+                added_missing.add(display_name)
+
+    return Recipe(
+        id=int(row['Srno']) if 'Srno' in row else 0,
+        name=recipe_name,
+        translated_name=str(row.get('TranslatedRecipeName', '')),
+        ingredients=ingreds,
+        prep_time=int(row['PrepTimeInMins']),
+        cook_time=int(row['CookTimeInMins']),
+        url=str(row['URL']),
+        youtube_link=youtube_url,
+        missing_ingredients=missing,
+        match_score=int(row['similarity_score']) if 'similarity_score' in row else 0,
+        instructions=nltk.sent_tokenize(str(row['Instructions'])) if 'Instructions' in row and pd.notna(row['Instructions']) else [],
+        cuisine=str(row['Cuisine']) if 'Cuisine' in row else "",
+        course=str(row['Course']) if 'Course' in row else "",
+        diet=str(row['Diet']) if 'Diet' in row else "",
+        servings=int(row['Servings']) if 'Servings' in row else 0
+    )
+
+def apply_profile_filters(recipes_df, constraints):
+    filtered_df = recipes_df.copy()
+    filtered_df['Ingredients'] = filtered_df['Ingredients'].fillna('')
+
+    for allergy in constraints.get("allergies", []):
+         if not allergy: continue
+         filtered_df = filtered_df[~filtered_df['Ingredients'].str.contains(allergy, case=False, na=False)]
+
+    diets = constraints.get("dietary_preferences", []) 
+    meats = ["chicken", "beef", "pork", "lamb", "fish", "shrimp", "meat", "bacon", "ham", "sausage", "seafood"]
+    dairy_eggs = ["egg", "milk", "cheese", "yogurt", "cream", "butter", "ghee"]
+    
+    if "Vegetarian" in diets or "Vegan" in diets:
+         pattern = '|'.join(meats)
+         filtered_df = filtered_df[~filtered_df['Ingredients'].str.contains(pattern, case=False, na=False)]
+    
+    if "Vegan" in diets:
+        pattern = '|'.join(dairy_eggs + ["honey"])
+        filtered_df = filtered_df[~filtered_df['Ingredients'].str.contains(pattern, case=False, na=False)]
+        
+    if "Gluten-Free" in diets:
+        gluten = ["wheat", "barley", "rye", "flour", "bread", "pasta"] 
+        pattern = '|'.join(gluten)
+        filtered_df = filtered_df[~filtered_df['Ingredients'].str.contains(pattern, case=False, na=False)]
+    return filtered_df
+
+# --- Endpoints ---
+
+@app.post("/register", response_model=Token)
+def register(user: UserCreate):
+    users_collection = get_users_collection()
+    if users_collection is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    if users_collection.find_one({"email": user.email}):
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    default_profile = {
+        "name": user.email.split("@")[0],
+        "experience_level": "Intermediate",
+        "dietary_preferences": [],
+        "allergies": [],
+        "health_goals": []
+    }
+    
+    new_user = {
+        "email": user.email,
+        "hashed_password": hashed_password,
+        "is_admin": False,
+        "profile": default_profile,
+        "interactions": []
+    }
+    
+    users_collection.insert_one(new_user)
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    users_collection = get_users_collection()
+    if users_collection is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    user = users_collection.find_one({"email": form_data.username})
+    if not user or not verify_password(form_data.password, user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user["email"]}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/profile")
+def get_profile(current_user: UserInDB = Depends(get_current_user)):
+    profile_data = current_user.profile.copy()
+    profile_data["interactions"] = current_user.interactions
+    profile_data["is_admin"] = current_user.is_admin
+    return profile_data
+
+@app.post("/profile")
+def update_profile(profile_update: UserProfileUpdate, current_user: UserInDB = Depends(get_current_user)):
+    users_collection = get_users_collection()
+    if users_collection is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    updates = {k: v for k, v in profile_update.model_dump().items() if v is not None}
+    
+    if not updates:
+        return current_user.profile
+
+    mongo_updates = {f"profile.{k}": v for k, v in updates.items()}
+    
+    users_collection.update_one(
+        {"email": current_user.email},
+        {"$set": mongo_updates}
+    )
+    
+    new_profile = current_user.profile.copy()
+    new_profile.update(updates)
+    return new_profile
+
+@app.post("/interaction")
+def log_interaction(interaction: InteractionRequest, current_user: UserInDB = Depends(get_current_user)):
+    users_collection = get_users_collection()
+    if users_collection is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    new_interaction = {
+        "timestamp": str(datetime.now()),
+        "action": interaction.action,
+        "recipe_name": interaction.recipe_name,
+        "details": interaction.details or {}
+    }
+    
+    users_collection.update_one(
+        {"email": current_user.email},
+        {"$push": {"interactions": new_interaction}}
+    )
+    return {"status": "success"}
+
+@app.post("/recommend", response_model=List[Recipe])
+def recommend_recipes_endpoint(request: RecipeRequest, current_user: Optional[UserInDB] = Depends(get_current_user)):
+    if df_english is None:
+        raise HTTPException(status_code=503, detail="Model failed to load.")
+
+    try:
+        raw_list = [i.strip() for i in request.ingredients.split(',')]
+        ingredients_list = []
+        for i in raw_list:
+            cleaned = clean_ingredient_text(i)
+            if cleaned:
+                ingredients_list.append(cleaned)
+        
+        if not ingredients_list and raw_list:
+             ingredients_list = [r for r in raw_list if r]
+
+        base_recs = get_recommendations_logic(ingredients_list, request.prep_time, request.cook_time, top_n=50)
+        
+        if current_user:
+             constraints = {
+                 "allergies": current_user.profile.get("allergies", []),
+                 "dietary_preferences": current_user.profile.get("dietary_preferences", []),
+             }
+             filtered_recs = apply_profile_filters(base_recs, constraints)
+        else:
+             filtered_recs = base_recs
+        
+        final_recs = filtered_recs.head(9)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+             func = lambda r: process_recipe_row(r, ingredients_list)
+             results = list(executor.map(func, [row for _, row in final_recs.iterrows()]))
+            
+        return results
+
+    except Exception as e:
+        print(f"Error generating recommendations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/detect-ingredients")
 async def detect_ingredients(file: UploadFile = File(None), text_input: str = Form(None)):
@@ -200,17 +531,10 @@ async def detect_ingredients(file: UploadFile = File(None), text_input: str = Fo
 
     try:
         detected_ingredients = set()
-
-        # 1. Process Image if provided
         if file:
-            # Read image
             image_data = await file.read()
             image = Image.open(io.BytesIO(image_data))
-            
-            # Run inference
             results = yolo_model(image)
-            
-            # Extract detected classes
             for result in results:
                 for box in result.boxes:
                     class_id = int(box.cls[0])
@@ -218,11 +542,7 @@ async def detect_ingredients(file: UploadFile = File(None), text_input: str = Fo
                     detected_ingredients.add(class_name)
         
         detections_list = list(detected_ingredients)
-        
-        # 2. Analyze perishability (combining YOLO detections and text input)
         prioritized_ingredients = analyze_perishability(detections_list, extra_text=text_input if text_input else "")
-        
-        # Sort by days_to_expiry (ascending)
         prioritized_ingredients.sort(key=lambda x: x.get('days_to_expiry', 999))
         
         return {"detected_ingredients": prioritized_ingredients}
@@ -231,54 +551,90 @@ async def detect_ingredients(file: UploadFile = File(None), text_input: str = Fo
         print(f"Error during detection: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/recommend", response_model=List[Recipe])
-def recommend_recipes_endpoint(request: RecipeRequest):
+@app.get("/recipe/{recipe_id}", response_model=Recipe)
+def get_recipe_details(recipe_id: int):
+    mongo_recipes = get_recipe_collection()
+    if mongo_recipes is not None:
+        doc = mongo_recipes.find_one({"Srno": recipe_id})
+        if doc:
+            return process_recipe_row(doc, user_ingredients_list=[])
+    
     if df_english is None:
-        raise HTTPException(status_code=503, detail="Model failed to load. Please check server logs.")
+         raise HTTPException(status_code=503, detail="Model not loaded")
+         
+    row = df_english[df_english['Srno'] == recipe_id]
+    if row.empty:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+        
+    return process_recipe_row(row.iloc[0], user_ingredients_list=[])
+
+@app.post("/translate")
+def translate_text(request: TranslationRequest):
+    try:
+        translated = GoogleTranslator(source='auto', target=request.target_lang).translate(request.text)
+        return {"translated_text": translated}
+    except Exception as e:
+        print(f"Translation error: {e}")
+        return {"translated_text": request.text}
+
+@app.post("/forgot-password")
+def forgot_password(request: ForgotPasswordRequest):
+    token = base64.urlsafe_b64encode(request.email.encode()).decode()
+    print(f"Password recovery requested for: {request.email}")
+    print(f"Recover your password here: http://localhost:5173/reset-password?token={token}")
+    return {"message": "If this email is registered, a recovery link has been sent."}
+
+@app.post("/reset-password")
+def reset_password(request: ResetPasswordRequest):
+    users_collection = get_users_collection()
+    if users_collection is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
     try:
-        # Convert comma separated string to list
-        ingredients_list = [i.strip() for i in request.ingredients.split(',')]
+        email = base64.urlsafe_b64decode(request.token).decode()
+    except:
+        raise HTTPException(status_code=400, detail="Invalid token")
         
-        preds = get_recommendations_logic(ingredients_list, request.prep_time, request.cook_time)
+    user = users_collection.find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
         
-        # Helper to process a single row
-        def process_recipe_row(row):
-            # Handle potential missing or NaN ingredients
-            ingreds = str(row['Ingredients']) if 'Ingredients' in row and pd.notna(row['Ingredients']) else "Not listed"
-            recipe_name = str(row['RecipeName'])
-            youtube_url = get_youtube_link(recipe_name)
-            
-            return Recipe(
-                name=recipe_name,
-                translated_name=str(row['TranslatedRecipeName']),
-                ingredients=ingreds,
-                prep_time=int(row['PrepTimeInMins']),
-                cook_time=int(row['CookTimeInMins']),
-                url=str(row['URL']),
-                youtube_link=youtube_url
-            )
+    new_hash = get_password_hash(request.new_password)
+    users_collection.update_one({"email": email}, {"$set": {"hashed_password": new_hash}})
+    return {"message": "Password updated successfully"}
 
-        # Execute searches in parallel (preserving order)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-             results = list(executor.map(process_recipe_row, [row for _, row in preds.iterrows()]))
-            
-        return results
+@app.get("/admin/users")
+def get_all_users(current_user: UserInDB = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have admin privileges")
+    
+    users_collection = get_users_collection()
+    users = list(users_collection.find())
+    
+    stats = []
+    for u in users:
+        interactions = u.get("interactions", [])
+        likes = sum(1 for i in interactions if isinstance(i, dict) and i.get('action') == 'like')
+        stats.append({
+            "email": u["email"],
+            "id": str(u.get("_id", "unknown")),
+            "is_admin": u.get("is_admin", False),
+            "joined_at": "2024-01-01", 
+            "total_interactions": len(interactions),
+            "total_likes": likes
+        })
+        
+    return stats
 
-    except Exception as e:
-        print(f"Error generating recommendations: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Enable CORS
-from fastapi.middleware.cors import CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.post("/admin/promote")
+def promote_user(email: str):
+    users_collection = get_users_collection()
+    user = users_collection.find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    users_collection.update_one({"email": email}, {"$set": {"is_admin": True}})
+    return {"message": f"User {email} is now an admin"}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    uvicorn.run(app, host="0.0.0.0", port=8010)
