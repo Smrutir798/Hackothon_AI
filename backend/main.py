@@ -1,3 +1,5 @@
+import requests
+import time
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends, status
 from pydantic import BaseModel
 from deep_translator import GoogleTranslator
@@ -5,8 +7,7 @@ import pickle
 import pandas as pd
 from typing import List, Optional, Dict, Any
 import os
-# Force CPU usage for PyTorch/YOLO to reserve VRAM for Ollama
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+from dotenv import load_dotenv
 import nltk
 from nltk.corpus import stopwords
 import string
@@ -15,14 +16,14 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
 from youtube_search import YoutubeSearch
 import concurrent.futures
-from ultralytics import YOLO
-from PIL import Image
 import json
-import io
 import base64
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import timedelta, datetime
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.concurrency import run_in_threadpool
+
+load_dotenv()
 
 # Database & Auth
 from database import get_users_collection, get_recipe_collection
@@ -99,7 +100,18 @@ model_data = None
 tfidf_vectorizer = None
 tfidf_matrix = None
 df_english = None
-yolo_model = None
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Ordered by preference
+VISION_MODELS = [
+    "google/gemma-3-27b-it:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    "mistralai/mistral-small-3.1-24b-instruct:free",
+    "qwen/qwen-2.5-vl-7b-instruct:free",
+    "meta-llama/llama-3.2-11b-vision-instruct:free"
+]
 
 MODEL_PATH = r"recipe_recommender_model.pkl"
 
@@ -155,11 +167,7 @@ try:
 except ImportError:
     print("Error: Ollama module not found. Please install with `pip install ollama`.")
 
-try:
-    yolo_model = YOLO('yolo11n.pt') 
-    print("YOLO model loaded.")
-except Exception as e:
-    print(f"Error loading YOLO model: {e}")
+    print("Error: Ollama module not found. Please install with `pip install ollama`.")
 
 # --- Helper Functions ---
 COOKING_STOPWORDS = {
@@ -169,6 +177,58 @@ COOKING_STOPWORDS = {
     "taste", "size", "small", "medium", "large", "fresh", "whole", "powder", "seeds", "oil", "leaves", "wedges", "fillet", "fillets", "boneless", "skinless",
     "water", "salt", "ice" 
 }
+
+def encode_image(file_bytes: bytes) -> str:
+    return base64.b64encode(file_bytes).decode("utf-8")
+
+
+def call_openrouter_with_fallback(payload: dict):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://localhost:8000", # Required by OpenRouter 
+        "X-Title": "LocalDev" # Required by OpenRouter
+    }
+
+    last_exception = None
+
+    for model in VISION_MODELS:
+        payload["model"] = model
+        print(f"Trying model: {model}")
+
+        for attempt in range(2):  # retry twice per model
+            try:
+                response = requests.post(
+                    OPENROUTER_URL,
+                    json=payload,
+                    headers=headers,
+                    timeout=60
+                )
+
+                if response.status_code == 200:
+                    return response.json(), model
+
+                # Rate limit → retry
+                if response.status_code == 429:
+                    print(f"Rate limited on {model}, retrying...")
+                    time.sleep(5)
+                    continue
+                
+                # Other errors → log and break to next model
+                print(f"Error {response.status_code} with {model}: {response.text}")
+                last_exception = f"Error {response.status_code}: {response.text}"
+                break # Break inner loop to try next model
+
+            except Exception as e:
+                print(f"Exception with {model}: {e}")
+                last_exception = str(e)
+                break # Break inner loop to try next model
+
+    # If all models fail
+    raise HTTPException(
+        status_code=500,
+        detail=f"All models failed. Last error: {last_exception}"
+    )
 
 def clean_ingredient_text(text):
     text = text.lower()
@@ -259,7 +319,7 @@ def analyze_perishability(ingredients_list, extra_text=""):
     - Low (Green): Rice, Grains, Pasta, Hard Cheeses, Frozen Foods, Canned Goods, Spices. Use within 15+ days.
 
     Return ONLY a valid JSON array where each object has:
-    - "name": (string) ingredient name
+    - "name": (string) ingredient name (CLEAN UP NAMES: Remove adjectives, colors, categories, and parentheses. Example: "Red Tomatoes" -> "Tomatoes", "Root Vegetables (Yams)" -> "Yams")
     - "days_to_expiry": (int)
     - "priority": (string)
     
@@ -523,32 +583,194 @@ def recommend_recipes_endpoint(request: RecipeRequest, current_user: Optional[Us
 
 @app.post("/detect-ingredients")
 async def detect_ingredients(file: UploadFile = File(None), text_input: str = Form(None)):
-    if yolo_model is None:
-        raise HTTPException(status_code=503, detail="YOLO model not loaded")
-    
     if not file and not text_input:
         raise HTTPException(status_code=400, detail="Either an image file or text input is required.")
 
     try:
-        detected_ingredients = set()
-        if file:
-            image_data = await file.read()
-            image = Image.open(io.BytesIO(image_data))
-            results = yolo_model(image)
-            for result in results:
-                for box in result.boxes:
-                    class_id = int(box.cls[0])
-                    class_name = yolo_model.names[class_id]
-                    detected_ingredients.add(class_name)
+        detected_text = ""
+        used_model = "None"
         
-        detections_list = list(detected_ingredients)
-        prioritized_ingredients = analyze_perishability(detections_list, extra_text=text_input if text_input else "")
+        if file:
+            if not file.content_type.startswith("image/"):
+                 raise HTTPException(status_code=400, detail="Only image files are allowed")
+            
+            image_bytes = await file.read()
+            image_base64 = encode_image(image_bytes)
+
+            payload = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Describe all food ingredients visible in this image. List them clearly."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{file.content_type};base64,{image_base64}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+            
+            # Run blocking code in threadpool
+            result, used_model = await run_in_threadpool(call_openrouter_with_fallback, payload)
+            detected_text = result["choices"][0]["message"]["content"]
+            print(f"OpenRouter Detection ({used_model}): {detected_text}")
+
+        # Combine text input and detected text for perishability analysis
+        combined_text = (detected_text + " " + (text_input if text_input else "")).strip()
+        
+        # Pass empty detected list, and everything else as 'extra_text' to let LLM parse it
+        prioritized_ingredients = analyze_perishability([], extra_text=combined_text)
         prioritized_ingredients.sort(key=lambda x: x.get('days_to_expiry', 999))
         
         return {"detected_ingredients": prioritized_ingredients}
         
     except Exception as e:
         print(f"Error during detection: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/verify-step")
+async def verify_cooking_step(file: UploadFile = File(...), instruction: str = Form(...)):
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+
+    try:
+        image_bytes = await file.read()
+        image_base64 = encode_image(image_bytes)
+
+        prompt = f"""
+        You are a friendly Indian Chef assistant. 
+        I am currently cooking and following this step: "{instruction}". 
+        
+        Please look at the attached image of my cooking. 
+        Does it look correct according to the instruction? 
+        
+        If it looks correct, say 'Looks perfect ji!'. 
+        If not, explain what is wrong and how to fix it in simple Indian English.
+        Keep your response concise and helpful.
+        """
+
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{file.content_type};base64,{image_base64}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        # Run blocking code in threadpool
+        result, used_model = await run_in_threadpool(call_openrouter_with_fallback, payload)
+        feedback = result["choices"][0]["message"]["content"]
+        print(f"Step Verification ({used_model}): {feedback}")
+        
+        return {"feedback": feedback}
+
+    except Exception as e:
+        print(f"Error during step verification: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat")
+async def chat_with_chef(
+    text_input: str = Form(...),
+    file: UploadFile = File(None),
+    context: str = Form(...), # JSON string: {recipe_name, step_label, instruction}
+    history: str = Form(None) # JSON string: list of {role, content}
+):
+    try:
+        # Parse Context
+        import json
+        ctx = json.loads(context)
+        recipe_name = ctx.get("recipe_name", "Unknown Recipe")
+        step_label = ctx.get("step_label", "General")
+        instruction = ctx.get("instruction", "")
+        
+        # Parse History (if needed for context, usually last few messages)
+        # For this simple implementation, we might just rely on immediate context + user query
+        # But let's check if we want to include history in the prompt.
+        chat_history = []
+        if history:
+            chat_history = json.loads(history)
+
+        # System Prompt
+        system_instruction = f"""
+        You are a friendly and encouraging Indian Chef assistant.
+        The user is cooking "{recipe_name}".
+        Current Context: {step_label} - "{instruction}".
+        
+        Your Goal: Help the user with this step, answer their questions, or verify their progress if they share an image.
+        Personality: Warm, helpful, speaks in Indian English (e.g., uses "ji", "beta", "don't worry").
+        
+        Guidelines:
+        - Keep answers concise (1-2 paragraphs max) as the user is busy cooking.
+        - If they send an image, analyze it relative to the current step instruction.
+        - If they ask for help, explain simply.
+        """
+        
+        # Construct Messages for OpenRouter
+        messages = []
+        
+        # We can't easily add a separate "system" role message for some VLM models, 
+        # so we often prepend it to the user message or use it if supported.
+        # OpenRouter/OpenAI usually supports developer/system messages, but for safety with VLMs, 
+        # let's prepend context to the user prompt.
+        
+        user_content_blocks = []
+        
+        # Add System Context as text
+        user_content_blocks.append({
+            "type": "text", 
+            "text": f"SYSTEM INSTRUCTION: {system_instruction}\n\nUSER MESSAGE: {text_input}"
+        })
+        
+        if file:
+            if not file.content_type.startswith("image/"):
+                raise HTTPException(status_code=400, detail="Only image files are allowed")
+            image_bytes = await file.read()
+            image_base64 = encode_image(image_bytes)
+            user_content_blocks.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{file.content_type};base64,{image_base64}"
+                }
+            })
+            print("Image attached to chat.")
+
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": user_content_blocks
+                }
+            ]
+        }
+
+        # Run blocking code in threadpool
+        result, used_model = await run_in_threadpool(call_openrouter_with_fallback, payload)
+        message_content = result["choices"][0]["message"]["content"]
+        print(f"Chat Response ({used_model}): {message_content[:50]}...")
+        
+        return {"response": message_content}
+
+    except Exception as e:
+        print(f"Error during chat: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/recipe/{recipe_id}", response_model=Recipe)
@@ -638,3 +860,4 @@ def promote_user(email: str):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8010)
+    
