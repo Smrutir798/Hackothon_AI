@@ -18,6 +18,8 @@ from youtube_search import YoutubeSearch
 import concurrent.futures
 import json
 import base64
+import socket
+import random
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import timedelta, datetime
 from fastapi.security import OAuth2PasswordRequestForm
@@ -242,11 +244,29 @@ def call_openrouter_with_fallback(payload: dict):
         detail=f"All models failed. Last error: {last_exception}"
     )
 
+def execute_with_retry(func, retries=3, delay=1, default=None):
+    """
+    Executes a function with retry logic for network-related errors.
+    """
+    for attempt in range(retries):
+        try:
+            return func()
+        except (requests.exceptions.RequestException, socket.gaierror, Exception) as e:
+            print(f"Attempt {attempt + 1}/{retries} failed for {func.__name__ if hasattr(func, '__name__') else 'unknown'}: {e}")
+            if attempt < retries - 1:
+                time.sleep(delay * (attempt + 1))  # Simple backoff
+            else:
+                print(f"All retries failed. Returning default.")
+                return default
+
 def clean_ingredient_text(text):
     text = text.lower()
     text = ''.join([i for i in text if not i.isdigit()])
     text = text.replace("/", " ").replace(".", " ")
-    tokens = nltk.word_tokenize(text)
+    try:
+        tokens = nltk.word_tokenize(text)
+    except:
+        tokens = text.split()
     clean_tokens = []
     for word in tokens:
         word = word.strip(string.punctuation)
@@ -281,7 +301,8 @@ def calculate_similarity(user_ingredients, user_prep_time, user_cook_time):
     prep_time_similarity = prep_time_similarity[:min_length]
     cook_time_similarity = cook_time_similarity[:min_length]
 
-    combined_similarity = (cosine_similarities + prep_time_similarity + cook_time_similarity) / 3
+    # Weight ingredients significantly higher (80%) than time (20%)
+    combined_similarity = (cosine_similarities * 0.8) + (prep_time_similarity * 0.1) + (cook_time_similarity * 0.1)
     return combined_similarity
 
 def get_recommendations_logic(user_ingredients_list, user_prep_time, user_cook_time, top_n=9):
@@ -299,13 +320,13 @@ def get_recommendations_logic(user_ingredients_list, user_prep_time, user_cook_t
     return recommendations
 
 def get_youtube_link(query):
-    try:
+    def _search():
         results = YoutubeSearch(query + " recipe", max_results=1).to_dict()
         if results:
             return f"https://www.youtube.com/watch?v={results[0]['id']}"
-    except Exception as e:
-        print(f"Error searching YouTube for {query}: {e}")
-    return ""
+        return ""
+
+    return execute_with_retry(_search, retries=3, delay=2, default="")
 
 def analyze_perishability(ingredients_list, extra_text=""):
     if not ingredients_list and not extra_text:
@@ -370,6 +391,78 @@ def analyze_perishability(ingredients_list, extra_text=""):
         print(f"Error analyzing perishability: {e}")
         fallback_list = ingredients_list + (extra_text.split(',') if extra_text else [])
         return [{"name": ing.strip(), "days_to_expiry": 7, "priority": "Medium"} for ing in fallback_list if ing.strip()]
+
+def generate_recipe_with_ollama(ingredients: List[str]) -> Recipe:
+    print(f"Generating AI recipe for: {ingredients}")
+    prompt = f"""
+    Create a unique and delicious recipe using these ingredients: {', '.join(ingredients)}.
+    You can assume standard pantry staples (salt, pepper, oil, water, spices).
+    
+    Return the recipe strictly in this JSON format:
+    {{
+        "name": "Recipe Name",
+        "description": "Short description",
+        "ingredients": "List of ingredients with quantities (e.g., '2 tomatoes, 1 onion')",
+        "instructions": ["Step 1", "Step 2", "Step 3"],
+        "prep_time": 15,
+        "cook_time": 30,
+        "cuisine": "Type of cuisine",
+        "diet": "Vegetarian/Non-Veg/Vegan etc.",
+        "course": "Main Course/Appetizer etc.",
+        "servings": 2
+    }}
+    Ensure the JSON is valid and contains no markdown formatting.
+    """
+    
+    try:
+        response = ollama.chat(model='llama3', format='json', messages=[
+            {'role': 'user', 'content': prompt},
+        ])
+        content = response['message']['content']
+        data = json.loads(content)
+        
+        # Map to Recipe model
+        # Using a negative ID to indicate AI generated
+        return Recipe(
+            id=-1,
+            name=data.get("name", "AI Generated Recipe"),
+            translated_name=data.get("name", "AI Generated Recipe"), # Placeholder
+            ingredients=str(data.get("ingredients", "")), # Convert to string if it's a list? Model expects string usually or we standardized
+            # The Recipe model expects string for ingredients usually based on CSV, let's check
+            # In process_recipe_row it handles parsing. Here we can just provide a string representation.
+            # If the LLM returns a list, join it.
+            prep_time=int(data.get("prep_time", 15)),
+            cook_time=int(data.get("cook_time", 15)),
+            url="",
+            youtube_link="", # Could try to search one but might be irrelevant
+            missing_ingredients=[],
+            match_score=95, # High score for custom generation
+            instructions=data.get("instructions", ["Mix ingredients", "Cook well"]),
+            cuisine=data.get("cuisine", "Fusion"),
+            course=data.get("course", "Main Dish"),
+            diet=data.get("diet", "Flexible"),
+            servings=int(data.get("servings", 2))
+        )
+    except Exception as e:
+        print(f"Error generating recipe with Ollama: {e}")
+        # Return a dummy error recipe
+        return Recipe(
+            id=-1,
+            name="Could not generate recipe",
+            translated_name="Error",
+            ingredients="None",
+            prep_time=0,
+            cook_time=0,
+            url="",
+            youtube_link="",
+            missing_ingredients=[],
+            match_score=0,
+            instructions=["Please try again with different ingredients."],
+            cuisine="None",
+            course="None",
+            diet="None",
+            servings=0
+        )
 
 def process_recipe_row(row, user_ingredients_list=[]):
     ingreds = str(row['Ingredients']) if 'Ingredients' in row and pd.notna(row['Ingredients']) else "Not listed"
@@ -581,11 +674,30 @@ def recommend_recipes_endpoint(request: RecipeRequest, current_user: Optional[Us
         else:
              filtered_recs = base_recs
         
-        final_recs = filtered_recs.head(9)
+        # Check if we have good matches
+        top_recs = filtered_recs.head(9)
+        best_score = 0
+        if not top_recs.empty:
+            if 'similarity_score' in top_recs.columns:
+                best_score = top_recs.iloc[0]['similarity_score']
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-             func = lambda r: process_recipe_row(r, ingredients_list)
-             results = list(executor.map(func, [row for _, row in final_recs.iterrows()]))
+        # Threshold for fallback (e.g. < 30% match)
+        results = []
+        if top_recs.empty or best_score < 30:
+            print(f"Match score {best_score}% is below threshold (30%). Triggering Ollama fallback...")
+            ai_recipe = generate_recipe_with_ollama(ingredients_list)
+            results.append(ai_recipe)
+            
+            # Still append the best partial matches if any
+            if not top_recs.empty:
+                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                     func = lambda r: process_recipe_row(r, ingredients_list)
+                     partials = list(executor.map(func, [row for _, row in top_recs.iterrows()]))
+                     results.extend(partials)
+        else:
+             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                  func = lambda r: process_recipe_row(r, ingredients_list)
+                  results = list(executor.map(func, [row for _, row in top_recs.iterrows()]))
             
         return results
 
@@ -804,11 +916,16 @@ def get_recipe_details(recipe_id: int):
 
 @app.post("/translate")
 def translate_text(request: TranslationRequest):
+    def _translate():
+        return GoogleTranslator(source='auto', target=request.target_lang).translate(request.text)
+
     try:
-        translated = GoogleTranslator(source='auto', target=request.target_lang).translate(request.text)
+        translated = execute_with_retry(_translate, retries=3, delay=1)
+        if not translated:
+            return {"translated_text": request.text}
         return {"translated_text": translated}
     except Exception as e:
-        print(f"Translation error: {e}")
+        print(f"Translation error after retries: {e}")
         return {"translated_text": request.text}
 
 import smtplib
@@ -918,4 +1035,3 @@ def promote_user(email: str):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8010)
-    
