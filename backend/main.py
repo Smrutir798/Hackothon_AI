@@ -23,7 +23,11 @@ from datetime import timedelta, datetime
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.concurrency import run_in_threadpool
 
-load_dotenv()
+from pathlib import Path
+
+# Robustly load .env from the backend directory
+env_path = Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # Database & Auth
 from database import get_users_collection, get_recipe_collection
@@ -107,10 +111,10 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # Ordered by preference
 VISION_MODELS = [
     "google/gemma-3-27b-it:free",
-    "nvidia/nemotron-nano-12b-v2-vl:free",
     "mistralai/mistral-small-3.1-24b-instruct:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    "google/gemini-2.0-flash-exp:free",
     "qwen/qwen-2.5-vl-7b-instruct:free",
-    "meta-llama/llama-3.2-11b-vision-instruct:free"
 ]
 
 MODEL_PATH = r"recipe_recommender_model.pkl"
@@ -196,7 +200,7 @@ def call_openrouter_with_fallback(payload: dict):
         payload["model"] = model
         print(f"Trying model: {model}")
 
-        for attempt in range(2):  # retry twice per model
+        for attempt in range(3):  # retry 3 times per model
             try:
                 response = requests.post(
                     OPENROUTER_URL,
@@ -208,12 +212,18 @@ def call_openrouter_with_fallback(payload: dict):
                 if response.status_code == 200:
                     return response.json(), model
 
-                # Rate limit → retry
+                # Rate limit → retry with backoff
                 if response.status_code == 429:
-                    print(f"Rate limited on {model}, retrying...")
-                    time.sleep(5)
+                    wait_time = (attempt + 1) * 2  # 2s, 4s, 6s
+                    print(f"Rate limited on {model}, retrying in {wait_time}s...")
+                    time.sleep(wait_time)
                     continue
                 
+                # 404 Not Found → Skip immediately
+                if response.status_code == 404:
+                    print(f"Model {model} not found (404). Skipping.")
+                    break # Break inner loop to try next model
+
                 # Other errors → log and break to next model
                 print(f"Error {response.status_code} with {model}: {response.text}")
                 last_exception = f"Error {response.status_code}: {response.text}"
@@ -222,7 +232,9 @@ def call_openrouter_with_fallback(payload: dict):
             except Exception as e:
                 print(f"Exception with {model}: {e}")
                 last_exception = str(e)
-                break # Break inner loop to try next model
+                # Don't break immediately on connection errors, maybe retry?
+                # For now let's retry on exception too
+                time.sleep(2) 
 
     # If all models fail
     raise HTTPException(
@@ -799,11 +811,57 @@ def translate_text(request: TranslationRequest):
         print(f"Translation error: {e}")
         return {"translated_text": request.text}
 
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+def send_email(to_email: str, subject: str, html_content: str):
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    email_from = os.getenv("EMAIL_FROM", "noreply@ai-chef.com")
+
+    if not smtp_user or not smtp_password:
+        print("SMTP credentials not set. Skipping email.")
+        return False
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = email_from
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(html_content, 'html'))
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+        print(f"Email sent successfully to {to_email}")
+        return True
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+        return False
+
 @app.post("/forgot-password")
 def forgot_password(request: ForgotPasswordRequest):
     token = base64.urlsafe_b64encode(request.email.encode()).decode()
+    reset_link = f"http://localhost:5173/reset-password?token={token}"
+    
     print(f"Password recovery requested for: {request.email}")
-    print(f"Recover your password here: http://localhost:5173/reset-password?token={token}")
+    print(f"Recover your password here: {reset_link}") # Keep log as backup
+
+    # Send Email
+    email_body = f"""
+    <h2>Password Recovery</h2>
+    <p>We received a request to reset your password for AI Chef Assistant.</p>
+    <p>Click the link below to reset it:</p>
+    <a href="{reset_link}">{reset_link}</a>
+    <p>If you didn't ask for this, please ignore this email.</p>
+    """
+    
+    send_email(request.email, "Reset Your Password - AI Chef", email_body)
+
     return {"message": "If this email is registered, a recovery link has been sent."}
 
 @app.post("/reset-password")
