@@ -2,6 +2,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import ChatAssistant from '../components/ChatAssistant';
+import Webcam from 'react-webcam';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
 
@@ -24,6 +26,18 @@ const CookingMode = () => {
     const [isListening, setIsListening] = useState(false);
     const [lastHeard, setLastHeard] = useState("");
     const recognitionRef = useRef(null);
+    
+    // Chat State
+    const [isChatOpen, setIsChatOpen] = useState(false);
+    
+    // AI Verification State
+    const [isVerifying, setIsVerifying] = useState(false);
+    const [verificationFeedback, setVerificationFeedback] = useState(null);
+
+    // Webcam State
+    const webcamRef = useRef(null);
+    const [showCamera, setShowCamera] = useState(false);
+    const [isProcessingVisual, setIsProcessingVisual] = useState(false);
 
     // Refs for accessing latest state inside event listeners
     const recipeRef = useRef(recipe);
@@ -150,6 +164,12 @@ const CookingMode = () => {
 
         if (!currentR || !currentR.instructions) return;
 
+        // Visual Query Command
+        if (cmd.includes('look at this') || cmd.includes('check this')) {
+            handleVisualQuery();
+            return;
+        }
+
         if (cmd.includes('next')) {
             if (currentS < (currentR.instructions.length - 1)) {
                 setCurrentStep(prev => prev + 1);
@@ -166,6 +186,15 @@ const CookingMode = () => {
              const text = currentR.instructions[currentS];
              speakText(text);
         }
+        else if (cmd.includes('timer') && cmd.includes('stop')) {
+            if (isTimerRunning) {
+                setIsTimerRunning(false);
+                setTimer(null);
+                speakText("Timer stopped.");
+            } else {
+                speakText("No timer is running.");
+            }
+        }
         else if (cmd.includes('timer') && cmd.includes('start')) {
              const stepText = currentR.instructions[currentS];
              const match = stepText.match(/(\d+)\s*min/i);
@@ -180,6 +209,83 @@ const CookingMode = () => {
         }
         else if (cmd.includes('stop')) {
             stopSpeaking();
+        }
+        // General Voice Chat Fallback
+        else if (cmd.length > 5 && !isSpeaking) {
+             // Treat as a question to the Chef
+             handleVoiceQuery(cmd);
+        }
+    };
+
+    const handleVisualQuery = async () => {
+        if (!webcamRef.current) {
+            speakText("I need to see you first. Please enable the camera.");
+            setShowCamera(true); // Auto-open camera if closed
+            return;
+        }
+
+        speakText("Taking a look...");
+        setIsProcessingVisual(true);
+
+        try {
+            const imageSrc = webcamRef.current.getScreenshot();
+            if (!imageSrc) {
+                throw new Error("Failed to capture image");
+            }
+
+            // Convert base64 to blob
+            const res = await fetch(imageSrc);
+            const blob = await res.blob();
+            const file = new File([blob], "camera_capture.jpg", { type: "image/jpeg" });
+
+            const formData = new FormData();
+            formData.append('text_input', "Strictly analyze this image. Does the food look like it matches the current step? If it looks wrong, tell me how to fix it. If it looks good, say 'Great job!'");
+            formData.append('file', file);
+            
+            const context = {
+                recipe_name: recipeRef.current ? recipeRef.current.name : "Unknown",
+                step_label: `Step ${stepRef.current + 1}`,
+                instruction: recipeRef.current.instructions[stepRef.current]
+            };
+            formData.append('context', JSON.stringify(context));
+
+            const apiRes = await axios.post(`${API_BASE_URL}/chat`, formData, {
+                 headers: { 'Content-Type': 'multipart/form-data' }
+            });
+
+            const reply = apiRes.data.response;
+            speakText(reply);
+
+        } catch (err) {
+            console.error("Visual query failed", err);
+            speakText("Sorry, I couldn't see that clearly. Please try again.");
+        } finally {
+            setIsProcessingVisual(false);
+        }
+    };
+
+    const handleVoiceQuery = async (query) => {
+        // Simple feedback
+        speakText("One moment...");
+        
+        try {
+            const formData = new FormData();
+            formData.append('text_input', query);
+            
+            const context = {
+                recipe_name: recipeRef.current ? recipeRef.current.name : "Unknown",
+                step_label: `Step ${stepRef.current + 1}`,
+                instructions: recipeRef.current.instructions ? recipeRef.current.instructions[stepRef.current] : ""
+            };
+            formData.append('context', JSON.stringify(context));
+
+            const apiRes = await axios.post(`${API_BASE_URL}/chat`, formData);
+            const reply = apiRes.data.response;
+            speakText(reply);
+            
+        } catch (err) {
+            console.error("Voice chat failed", err);
+            speakText("Sorry, I didn't catch that.");
         }
     };
 
@@ -241,6 +347,7 @@ const CookingMode = () => {
         return `${m}:${s < 10 ? '0' : ''}${s}`;
     };
 
+
     if (loading) return <div className="loading">Loading Recipe...</div>;
     if (!recipe) return <div className="error">Recipe not found.</div>;
 
@@ -248,7 +355,7 @@ const CookingMode = () => {
     const stepText = instructions.length > 0 ? instructions[currentStep] : "No instructions available.";
     
     // Logic to show "Timer" tip if regex matches
-    const timerMatch = stepText.match(/(\d+)\s*min/i);
+    const timerMatch = stepText ? stepText.match(/(\d+)\s*min/i) : null;
     const hasTimer = !!timerMatch;
     
     const displayText = (targetLang !== 'en' && translations[currentStep]?.[targetLang]) 
@@ -281,13 +388,31 @@ const CookingMode = () => {
                     </select>
                 </div>
                 
-                 <button 
-                    className={`control-btn ${isListening ? 'mic-active' : 'btn-secondary'}`} 
-                    onClick={toggleListening}
-                    title="Say: 'Next', 'Back', 'Read'"
-                >
-                    {isListening ? '🎙️ Listening...' : '🎙️ Mic Off'}
-                </button>
+                <div style={{display:'flex', gap:'0.5rem'}}>
+                    <button 
+                        className={`control-btn ${isChatOpen ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setIsChatOpen(!isChatOpen)}
+                        title="Chat with AI Chef"
+                    >
+                        👨‍🍳 Chat
+                    </button>
+                    <button 
+                        className={`control-btn ${isListening ? 'mic-active' : 'btn-secondary'}`} 
+                        onClick={toggleListening}
+                        title="Say: 'Next', 'Back', 'Look at this'"
+                        style={{ minWidth: '120px' }}
+                    >
+                        {isListening ? '🛑 Stop Mic' : '🎙️ Start Mic'}
+                    </button>
+
+                    <button 
+                        className={`control-btn ${showCamera ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setShowCamera(!showCamera)}
+                        title="Toggle Camera"
+                    >
+                        {showCamera ? '📷 On' : '📷 Off'}
+                    </button>
+                </div>
             </header>
 
             {/* 2. Main Content Area */}
@@ -317,6 +442,7 @@ const CookingMode = () => {
                                 displayText
                             }
                         </div>
+
 
                         {/* Contextual Tips Footer inside card */}
                         <div className="step-tips">
@@ -386,6 +512,63 @@ const CookingMode = () => {
                     </div>
                 )}
             </footer>
+            
+            {/* Chat Sidebar Overlay */}
+            {isChatOpen && (
+                <div style={{
+                    position: 'fixed', top: '70px', right: '1rem', bottom: '1rem', width: '350px',
+                    zIndex: 1000, borderRadius: '0.8rem', overflow: 'hidden'
+                }}>
+                    <ChatAssistant 
+                        recipe={recipe} 
+                        currentStep={currentStep} 
+                        stepText={displayText} 
+                    />
+                </div>
+            )}
+
+            {/* Webcam Overlay */}
+            {showCamera && (
+                <div style={{
+                    position: 'fixed', bottom: '80px', left: '1rem', 
+                    width: '200px', height: '150px', background: 'black',
+                    borderRadius: '0.8rem', overflow: 'hidden', border: '2px solid white',
+                    zIndex: 900, boxShadow: '0 4px 6px rgba(0,0,0,0.3)'
+                }}>
+                    <Webcam
+                        audio={false}
+                        ref={webcamRef}
+                        screenshotFormat="image/jpeg"
+                        videoConstraints={{ facingMode: "user" }}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                    <div style={{
+                        position: 'absolute', bottom: '0.5rem', left: '0', right: '0', 
+                        display: 'flex', justifyContent: 'center'
+                    }}>
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); handleVisualQuery(); }}
+                            disabled={isProcessingVisual}
+                            style={{
+                                padding: '0.3rem 0.8rem', background: '#3b82f6', color: 'white', 
+                                border: 'none', borderRadius: '1rem', fontSize: '0.8rem', cursor: 'pointer',
+                                opacity: 0.9, fontWeight: 'bold'
+                            }}
+                        >
+                            {isProcessingVisual ? 'Thinking...' : '👀 Analyze'}
+                        </button>
+                    </div>
+                    {isProcessingVisual && (
+                         <div style={{
+                             position:'absolute', top:0, left:0, right:0, bottom:0, 
+                             background:'rgba(0,0,0,0.5)', display:'flex', alignItems:'center', justifyContent:'center',
+                             color:'white', fontWeight:'bold'
+                         }}>
+                             Thinking...
+                         </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 };

@@ -1,5 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import axios from 'axios';
+import Webcam from 'react-webcam';
 
 const DETECT_ENDPOINT = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8010/recommend').replace('/recommend', '/detect-ingredients');
 
@@ -9,7 +10,10 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
   const [cookTime, setCookTime] = useState(45); // Default 45 mins
   const [isDetecting, setIsDetecting] = useState(false);
   const hiddenFileInput = useRef(null);
+  const webcamRef = useRef(null);
   const [detectedItems, setDetectedItems] = useState([]);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [showCamera, setShowCamera] = useState(false);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -21,12 +25,41 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
   };
 
   const handleClick = () => {
-    hiddenFileInput.current.click();
+    // If on mobile (basic check), maybe prefer native file picker? 
+    // But user asked for camera specifically. Let's toggle our new modal.
+    setShowCamera(true);
   };
+  
+  const handleNativeFileUpload = () => {
+      hiddenFileInput.current.click();
+  };
+
+  const dataURLtoFile = (dataurl, filename) => {
+      let arr = dataurl.split(','), mime = arr[0].match(/:(.*?);/)[1],
+      bstr = atob(arr[1]), n = bstr.length, u8arr = new Uint8Array(n);
+      while(n--){
+          u8arr[n] = bstr.charCodeAt(n);
+      }
+      return new File([u8arr], filename, {type:mime});
+  }
+
+  const capture = useCallback(() => {
+    const imageSrc = webcamRef.current.getScreenshot();
+    if (imageSrc) {
+        const file = dataURLtoFile(imageSrc, 'camera-capture.jpg');
+        // Reuse handleImageUpload by simulating an event
+        handleImageUpload({ target: { files: [file] } });
+        setShowCamera(false);
+    }
+  }, [webcamRef]);
 
   const handleImageUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
+    // Create preview
+    const objectUrl = URL.createObjectURL(file);
+    setImagePreview(objectUrl);
 
     setIsDetecting(true);
     const formData = new FormData();
@@ -60,8 +93,19 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
       alert('Failed to detect ingredients. Please try again.');
     } finally {
       setIsDetecting(false);
+      // Do NOT clear file input here so we can keep the preview if needed, 
+      // or clear it if that's the desired UX. 
+      // For now, let's keep the preview until user manually changes it or submits.
+      // If we want to allow re-uploading same file, we might need to reset value, 
+      // but that kills the "filename" appearing in standard inputs. 
+      // Since it's hidden, we can reset it to allow re-triggering change event.
       if (hiddenFileInput.current) hiddenFileInput.current.value = '';
     }
+  };
+
+  const clearImage = () => {
+      setImagePreview(null);
+      setDetectedItems([]);
   };
 
   const getPriorityColor = (priority, days) => {
@@ -138,6 +182,10 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
               />
               <button 
                   type="button"
+                  disabled={isDetecting}
+              />
+              <button 
+                  type="button"
                   onClick={handleClick}
                   title="Scan Ingredients from Photo"
                   style={{ 
@@ -162,6 +210,45 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
                   {isDetecting ? '⏳' : '📷'}
               </button>
           </div>
+
+          {/* Image Preview Section */}
+          {imagePreview && (
+              <div style={{ marginTop: '1rem', position: 'relative', display: 'inline-block' }}>
+                  <img 
+                      src={imagePreview} 
+                      alt="Preview" 
+                      style={{ 
+                          maxHeight: '200px', 
+                          maxWidth: '100%', 
+                          borderRadius: '8px',
+                          border: '2px solid var(--border)' 
+                      }} 
+                  />
+                  <button
+                      type="button"
+                      onClick={clearImage}
+                      title="Remove Image"
+                      style={{
+                          position: 'absolute',
+                          top: '-10px',
+                          right: '-10px',
+                          background: '#ef4444',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '50%',
+                          width: '24px',
+                          height: '24px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                      }}
+                  >
+                      ×
+                  </button>
+              </div>
+          )}
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.8rem' }}>
              <small style={{ color: 'var(--text-muted)' }}>
@@ -283,6 +370,76 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
           {isLoading ? 'Cooking up ideas...' : 'Generate Personalized Recipes ✨'}
         </button>
       </form>
+
+
+      {/* Camera Modal */}
+      {showCamera && (
+        <div style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.85)',
+            zIndex: 9999,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '1rem'
+        }}>
+            <div style={{ position: 'relative', width: '100%', maxWidth: '640px' }}>
+                <Webcam
+                    audio={false}
+                    ref={webcamRef}
+                    screenshotFormat="image/jpeg"
+                    style={{ width: '100%', borderRadius: '12px', boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}
+                    videoConstraints={{ facingMode: "environment" }}
+                />
+                <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                     <button 
+                        type="button"
+                        onClick={() => setShowCamera(false)} 
+                        className="btn" 
+                        style={{
+                            background: 'rgba(255,255,255,0.2)', 
+                            color: 'white',
+                            border: '1px solid rgba(255,255,255,0.3)'
+                        }}
+                    >
+                        Cancel
+                    </button>
+                    
+                    {/* Fallback to file picker if camera fails or user prefers it */}
+                    <button 
+                        type="button"
+                        onClick={() => { setShowCamera(false); handleNativeFileUpload(); }}
+                        className="btn" 
+                        style={{
+                            background: 'rgba(255,255,255,0.2)', 
+                            color: 'white', 
+                             border: '1px solid rgba(255,255,255,0.3)'
+                        }}
+                    >
+                        📁 Upload File
+                    </button>
+
+                     <button 
+                        type="button"
+                        onClick={capture} 
+                        className="btn" 
+                        style={{
+                            background: 'var(--primary)', 
+                            color: 'white',
+                            padding: '0.8rem 2rem',
+                            fontWeight: 'bold',
+                            border: 'none',
+                            boxShadow: '0 0 15px var(--primary)'
+                        }}
+                    >
+                        Capture Photo 📸
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
     </div>
   );
 };

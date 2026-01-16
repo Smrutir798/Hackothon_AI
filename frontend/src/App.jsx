@@ -158,6 +158,7 @@ function AppContent() {
             isOpen={isSidebarOpen} 
             toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)} 
             likedRecipes={likedRecipes} 
+            onInteraction={handleInteraction}
         />
 
         <div style={{ position: 'absolute', right: 0, top: 0, display: 'flex', alignItems: 'center', gap: '1rem' }}>
