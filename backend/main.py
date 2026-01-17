@@ -24,6 +24,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import timedelta, datetime
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.concurrency import run_in_threadpool
+from PIL import Image, ExifTags
+import io
+
 
 from pathlib import Path
 
@@ -113,10 +116,9 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # Ordered by preference
 VISION_MODELS = [
     "google/gemma-3-27b-it:free",
-    "mistralai/mistral-small-3.1-24b-instruct:free",
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "google/gemini-2.0-flash-exp:free",
     "qwen/qwen-2.5-vl-7b-instruct:free",
+    "nvidia/llama-3.2-90b-vision-instruct:free",
+    "meta-llama/llama-3.2-11b-vision-instruct:free",
 ]
 
 MODEL_PATH = r"recipe_recommender_model.pkl"
@@ -143,21 +145,22 @@ def load_model():
             tfidf_matrix = model_data['tfidf_matrix']
             
             # Load from MongoDB
-            mongo_recipes = get_recipe_collection()
-            if mongo_recipes is not None:
-                print("Loading recipes from MongoDB...")
-                # Sort by Srno to match TF-IDF matrix alignment!
-                cursor = mongo_recipes.find().sort("Srno", 1)
-                recipes_list = list(cursor)
-                if recipes_list:
-                    df_english = pd.DataFrame(recipes_list)
-                    print(f"Loaded {len(df_english)} recipes from MongoDB.")
-                else:
-                     print("MongoDB collection text empty. Fallback to pickle dataframe.")
-                     df_english = model_data['dataframe']
-            else:
-                 print("MongoDB not connected. Fallback to pickle dataframe.")
-                 df_english = model_data['dataframe']
+            # Load from MongoDB - DISABLED per user request to use Pickle file
+            # mongo_recipes = get_recipe_collection()
+            # if mongo_recipes is not None:
+            #     print("Loading recipes from MongoDB...")
+            #     # Sort by Srno to match TF-IDF matrix alignment!
+            #     cursor = mongo_recipes.find().sort("Srno", 1)
+            #     recipes_list = list(cursor)
+            #     if recipes_list:
+            #         df_english = pd.DataFrame(recipes_list)
+            #         print(f"Loaded {len(df_english)} recipes from MongoDB.")
+            #     else:
+            #          print("MongoDB collection text empty. Fallback to pickle dataframe.")
+            #          df_english = model_data['dataframe']
+            # else:
+            #      print("MongoDB not connected. Fallback to pickle dataframe.")
+            df_english = model_data['dataframe']
             
             print("Model loaded successfully.")
         else:
@@ -212,7 +215,14 @@ def call_openrouter_with_fallback(payload: dict):
                 )
 
                 if response.status_code == 200:
-                    return response.json(), model
+                    data = response.json()
+                    if "choices" in data and len(data["choices"]) > 0:
+                        return data, model
+                    else:
+                        print(f"Model {model} returned 200 but missing 'choices' or empty: {data}")
+                        # Treat as error to try next model
+                        last_exception = f"Model {model} returned invalid response format"
+                        break # Try next model
 
                 # Rate limit → retry with backoff
                 if response.status_code == 429:
@@ -318,6 +328,31 @@ def get_recommendations_logic(user_ingredients_list, user_prep_time, user_cook_t
         
     recommendations['similarity_score'] = scores.astype(int).values
     return recommendations
+
+def remove_metadata(image_bytes: bytes) -> bytes:
+    """
+    Strips EXIF metadata from an image byte stream.
+    Returns the cleaned image as bytes.
+    """
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        # Create a new image with the same mode and size.
+        # This implementation simply saves the image again without the exif data.
+        # Note: We need to respect the format if possible, default to JPEG.
+        
+        output_buffer = io.BytesIO()
+        fmt = image.format if image.format else 'JPEG'
+        
+        # Save without passing 'exif' parameter strips it by default in PIL
+        image.save(output_buffer, format=fmt)
+        
+        return output_buffer.getvalue()
+    except Exception as e:
+        print(f"Error stripping metadata: {e}")
+        # If anything fails (e.g. not an image), return original bytes
+        return image_bytes
+
 
 def get_youtube_link(query):
     def _search():
@@ -719,6 +754,10 @@ async def detect_ingredients(file: UploadFile = File(None), text_input: str = Fo
                  raise HTTPException(status_code=400, detail="Only image files are allowed")
             
             image_bytes = await file.read()
+            
+            # Privacy: Remove metadata before sending to AI
+            image_bytes = remove_metadata(image_bytes)
+            
             image_base64 = encode_image(image_bytes)
 
             payload = {
@@ -728,7 +767,7 @@ async def detect_ingredients(file: UploadFile = File(None), text_input: str = Fo
                         "content": [
                             {
                                 "type": "text",
-                                "text": "Describe all food ingredients visible in this image. List them clearly."
+                                "text": "List the food ingredients visible in this image. Use Indian English naming conventions (e.g. use 'Raw Banana' for Plantain, 'Brinjal' for Eggplant, 'Capsicum' for Bell Pepper, 'Lady Finger' for Okra). Return ONLY the names as a comma separated list. Do NOT include colors, adjectives, quantities, or descriptions."
                             },
                             {
                                 "type": "image_url",
@@ -766,6 +805,10 @@ async def verify_cooking_step(file: UploadFile = File(...), instruction: str = F
 
     try:
         image_bytes = await file.read()
+        
+        # Privacy: Remove metadata before sending to AI
+        image_bytes = remove_metadata(image_bytes)
+        
         image_base64 = encode_image(image_bytes)
 
         prompt = f"""
@@ -899,11 +942,11 @@ async def chat_with_chef(
 
 @app.get("/recipe/{recipe_id}", response_model=Recipe)
 def get_recipe_details(recipe_id: int):
-    mongo_recipes = get_recipe_collection()
-    if mongo_recipes is not None:
-        doc = mongo_recipes.find_one({"Srno": recipe_id})
-        if doc:
-            return process_recipe_row(doc, user_ingredients_list=[])
+    # mongo_recipes = get_recipe_collection()
+    # if mongo_recipes is not None:
+    #     doc = mongo_recipes.find_one({"Srno": recipe_id})
+    #     if doc:
+    #         return process_recipe_row(doc, user_ingredients_list=[])
     
     if df_english is None:
          raise HTTPException(status_code=503, detail="Model not loaded")
