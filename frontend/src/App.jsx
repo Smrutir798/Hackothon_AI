@@ -9,6 +9,7 @@ import ResetPasswordModal from './components/ResetPasswordModal';
 import axios from 'axios';
 import Home from './pages/Home';
 import CookingMode from './pages/CookingMode';
+import LandingPage from './pages/LandingPage';
 import './index.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
@@ -25,6 +26,7 @@ function AppContent() {
 
   // Check if we are in cooking mode to hide standard layout
   const isCookingMode = location.pathname.startsWith('/cook/');
+  const isLandingPage = location.pathname === '/';
 
   useEffect(() => {
     // Check for Reset Token in URL
@@ -149,6 +151,14 @@ function AppContent() {
       );
   }
 
+  if (isLandingPage) {
+     return (
+        <Routes>
+            <Route path="/" element={<LandingPage />} />
+        </Routes>
+     );
+  }
+
   // Render Standard Layout
   return (
     <div className="container">
@@ -201,7 +211,7 @@ function AppContent() {
             )}
         </div>
 
-        <h1 className="title">AI Culinary Assistant</h1>
+        <h1 className="title">CookMate</h1>
         <p className="subtitle">Discover personalized recipes matched to your ingredients and time.</p>
       </header>
       
@@ -238,7 +248,7 @@ function AppContent() {
       />
       
       <Routes>
-          <Route path="/" element={<Home userProfile={userProfile} onInteraction={handleInteraction} />} />
+          <Route path="/app" element={<Home userProfile={userProfile} onInteraction={handleInteraction} />} />
           <Route path="/reset-password" element={<Home userProfile={userProfile} onInteraction={handleInteraction} />} />
       </Routes>
       

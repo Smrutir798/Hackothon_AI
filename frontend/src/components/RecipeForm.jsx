@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
+import IngredientVisualizer from './IngredientVisualizer';
 import axios from 'axios';
 import Webcam from 'react-webcam';
 
@@ -298,6 +299,10 @@ const RecipeForm = ({ onSubmit, isLoading }) => {
                   ))}
               </div>
           )}
+        {detectedItems.length > 0 && imagePreview && (
+              <IngredientVisualizer imageSrc={imagePreview} detectedItems={detectedItems} />
+          )}
+
         </div>
 
         <div style={{ borderTop: '1px solid var(--border)', margin: '0 -2rem 2rem -2rem' }}></div>
