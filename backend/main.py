@@ -115,10 +115,12 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Ordered by preference
 VISION_MODELS = [
+    "allenai/molmo-2-8b:free",
+    "google/gemini-2.0-flash-exp:free",
     "google/gemma-3-27b-it:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",
     "qwen/qwen-2.5-vl-7b-instruct:free",
-    "nvidia/llama-3.2-90b-vision-instruct:free",
-    "meta-llama/llama-3.2-11b-vision-instruct:free",
+    "meta-llama/llama-3.2-11b-vision-instruct:free"
 ]
 
 MODEL_PATH = r"recipe_recommender_model.pkl"
@@ -254,6 +256,64 @@ def call_openrouter_with_fallback(payload: dict):
         detail=f"All models failed. Last error: {last_exception}"
     )
 
+import re
+
+def parse_ingredients_with_bboxes(text):
+    """
+    Parses text containing ingredients and bounding boxes.
+    Expected format: 'Name [ymin, xmin, ymax, xmax]' or just 'Name'.
+    Returns:
+        - List of ingredient names (clean)
+        - Dict mapping clean_name -> bbox_list
+    """
+    ingredients = []
+    bbox_map = {}
+    
+    # Text can contain commas inside brackets, e.g. "Bhindi [100, 200, 300, 400]"
+    # replace commas inside brackets with semicolons to avoid splitting split
+    temp_text = list(text)
+    inside_bracket = False
+    for i, char in enumerate(temp_text):
+        if char == '[': inside_bracket = True
+        elif char == ']': inside_bracket = False
+        elif char == ',' and inside_bracket:
+            temp_text[i] = ';'
+    temp_text = "".join(temp_text)
+    
+    # Now split by comma or newline
+    items = re.split(r'[,\n]', temp_text)
+    
+    for item in items:
+        item = item.strip()
+        if not item: continue
+        
+        # Robustly find bbox at the end: [...]
+        # We look for the last pair of brackets
+        bbox_match = re.search(r"\[(.*?)\]$", item)
+        bbox = None
+        
+        if bbox_match:
+            content = bbox_match.group(1)
+            # Extract exactly 4 integers
+            nums = re.findall(r"\d+", content)
+            if len(nums) == 4:
+                bbox = [int(n) for n in nums]
+            
+            # Use text BEFORE the brackets as name
+            name_part = item[:bbox_match.start()].strip()
+        else:
+            name_part = item
+            
+        name_clean = name_part.strip().strip(string.punctuation)
+        
+        if name_clean:
+            ingredients.append(name_clean)
+            if bbox:
+                bbox_map[name_clean.lower()] = bbox
+                
+    return ingredients, bbox_map
+
+
 def execute_with_retry(func, retries=3, delay=1, default=None):
     """
     Executes a function with retry logic for network-related errors.
@@ -387,7 +447,7 @@ def analyze_perishability(ingredients_list, extra_text=""):
     - Low (Green): Rice, Grains, Pasta, Hard Cheeses, Frozen Foods, Canned Goods, Spices. Use within 15+ days.
 
     Return ONLY a valid JSON array where each object has:
-    - "name": (string) ingredient name (CLEAN UP NAMES: Remove adjectives, colors, categories, and parentheses. Example: "Red Tomatoes" -> "Tomatoes", "Root Vegetables (Yams)" -> "Yams")
+    - "name": (string) ingredient name (CLEAN UP NAMES: Remove quantities/numbers. KEEP Indian names in parentheses if available. Example: "Red Tomatoes" -> "Tomatoes", "Zucchini (Turai)" -> "Zucchini (Turai)", "Carrot [10 20 30 40]" -> "Carrot")
     - "days_to_expiry": (int)
     - "priority": (string)
     
@@ -767,7 +827,7 @@ async def detect_ingredients(file: UploadFile = File(None), text_input: str = Fo
                         "content": [
                             {
                                 "type": "text",
-                                "text": "List the food ingredients visible in this image. Use Indian English naming conventions (e.g. use 'Raw Banana' for Plantain, 'Brinjal' for Eggplant, 'Capsicum' for Bell Pepper, 'Lady Finger' for Okra). Return ONLY the names as a comma separated list. Do NOT include colors, adjectives, quantities, or descriptions."
+                                "text": "Identify the food ingredients in this image. For EACH ingredient, provide its name in English, followed by the Hindi name in parentheses if available (e.g. 'Eggplant (Baingan)', 'Okra (Bhindi)'). Follow with its Bounding Box. Format: 'Name [ymin, xmin, ymax, xmax]'. Coordinates must be normalized to 0-1000 scale. Return a list."
                             },
                             {
                                 "type": "image_url",
@@ -785,14 +845,48 @@ async def detect_ingredients(file: UploadFile = File(None), text_input: str = Fo
             detected_text = result["choices"][0]["message"]["content"]
             print(f"OpenRouter Detection ({used_model}): {detected_text}")
 
+        # Parse detected text for bboxes
+        detected_ingredients_list, bbox_map = parse_ingredients_with_bboxes(detected_text)
+        
         # Combine text input and detected text for perishability analysis
-        combined_text = (detected_text + " " + (text_input if text_input else "")).strip()
+        # If text input exists, add it to the list
+        if text_input:
+             detected_ingredients_list.extend([t.strip() for t in text_input.split(',') if t.strip()])
+
+        # Pass specific list to analyze_perishability
+        prioritized_ingredients = analyze_perishability(detected_ingredients_list, extra_text="")
         
-        # Pass empty detected list, and everything else as 'extra_text' to let LLM parse it
-        prioritized_ingredients = analyze_perishability([], extra_text=combined_text)
-        prioritized_ingredients.sort(key=lambda x: x.get('days_to_expiry', 999))
+        # Merge bboxes back into the result
+        filtered_results = []
+        seen_names = set()
         
-        return {"detected_ingredients": prioritized_ingredients}
+        for item in prioritized_ingredients:
+            name = item.get("name", "")
+            if not name: continue
+            
+            # Normalize name for lookup
+            # The LLM might have slightly changed the name (e.g. capitalized)
+            # We try to find a matching bbox in our map
+            
+            # Check exact match lower
+            bbox = bbox_map.get(name.lower())
+            
+            # If not found, try simple partial match
+            if not bbox:
+                 for mapped_name, mapped_bbox in bbox_map.items():
+                     if mapped_name in name.lower() or name.lower() in mapped_name:
+                         bbox = mapped_bbox
+                         break
+            
+            item["bbox"] = bbox # Can be None
+            
+            if name.lower() not in seen_names:
+                filtered_results.append(item)
+                seen_names.add(name.lower())
+
+        filtered_results.sort(key=lambda x: x.get('days_to_expiry', 999))
+        
+        return {"detected_ingredients": filtered_results}
         
     except Exception as e:
         print(f"Error during detection: {e}")
